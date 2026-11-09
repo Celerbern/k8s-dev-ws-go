@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -141,6 +142,36 @@ func apiDelete[Resp any](cfg *Config, path string) (*Resp, error) {
 	return apiDo[Resp](cfg, http.MethodDelete, path, nil)
 }
 
+// apiStream opens a GET whose body is streamed (e.g. workspace logs). The
+// caller must close the returned ReadCloser. The stream is aborted when ctx
+// is cancelled.
+func apiStream(ctx context.Context, cfg *Config, path string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.ServerURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Accept", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &errResp)
+		msg := errResp.Error
+		if msg == "" {
+			msg = string(raw)
+		}
+		return nil, &httpError{Status: resp.StatusCode, Body: msg}
+	}
+	return resp.Body, nil
+}
+
 // ----------------------------------------------------------------- types --
 
 type userView struct {
@@ -177,8 +208,19 @@ type workspaceView struct {
 	Paused    bool     `json:"paused"`
 	Phase     string   `json:"phase"`
 	Message   string   `json:"message"`
+	PodName   string   `json:"podName"`
 	SSHHost   string   `json:"sshHost"`
 	CreatedAt string   `json:"createdAt"`
+}
+
+type eventView struct {
+	Type      string `json:"type"`
+	Reason    string `json:"reason"`
+	Object    string `json:"object"`
+	Message   string `json:"message"`
+	Count     int32  `json:"count"`
+	FirstSeen string `json:"firstSeen"`
+	LastSeen  string `json:"lastSeen"`
 }
 
 type platformConfig struct {

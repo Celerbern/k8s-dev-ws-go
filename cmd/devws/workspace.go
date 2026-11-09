@@ -1,11 +1,19 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
+	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -16,21 +24,26 @@ func workspaceCmd() *cobra.Command {
 		Aliases: []string{"ws"},
 		Short:   "Manage workspaces",
 	}
-	cmd.AddCommand(workspaceListCmd(), workspaceCreateCmd(), workspaceStartCmd(), workspaceStopCmd(), workspaceDeleteCmd())
+	cmd.AddCommand(workspaceListCmd(), workspaceCreateCmd(), workspaceGetCmd(), workspaceStartCmd(), workspaceStopCmd(), workspaceDeleteCmd(), workspaceLogsCmd(), workspaceEventsCmd())
 	return cmd
 }
 
 func workspaceListCmd() *cobra.Command {
-	return &cobra.Command{
+	var all bool
+	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List your workspaces",
+		Short:   "List your workspaces (or all of them, for admins)",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, err := LoadConfig()
 			if err != nil {
 				return err
 			}
-			items, err := apiGet[[]workspaceView](cfg, "/api/workspaces")
+			path := "/api/workspaces"
+			if all {
+				path += "?scope=all"
+			}
+			items, err := apiGet[[]workspaceView](cfg, path)
 			if err != nil {
 				return err
 			}
@@ -39,11 +52,62 @@ func workspaceListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 4, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tPHASE\tCLASS\tSSH HOST\tMESSAGE")
+			if all {
+				fmt.Fprintln(w, "NAME\tUSER\tPHASE\tCLASS\tSSH HOST\tMESSAGE")
+			} else {
+				fmt.Fprintln(w, "NAME\tPHASE\tCLASS\tSSH HOST\tMESSAGE")
+			}
 			for _, ws := range *items {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ws.Name, ws.Phase, ws.Class, ws.SSHHost, ws.Message)
+				if all {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", ws.Name, ws.User, ws.Phase, ws.Class, ws.SSHHost, ws.Message)
+				} else {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ws.Name, ws.Phase, ws.Class, ws.SSHHost, ws.Message)
+				}
 			}
 			return w.Flush()
+		},
+	}
+	cmd.Flags().BoolVar(&all, "all", false, "list workspaces of all users (admin)")
+	return cmd
+}
+
+func workspaceGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get NAME",
+		Short: "Show one workspace in detail",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cfg, err := LoadConfig()
+			if err != nil {
+				return err
+			}
+			ws, err := apiGet[workspaceView](cfg, "/api/workspaces/"+args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Printf("name:       %s\n", ws.Name)
+			fmt.Printf("user:       %s (%s)\n", ws.User, ws.Namespace)
+			fmt.Printf("phase:      %s\n", ws.Phase)
+			if ws.Message != "" {
+				fmt.Printf("message:    %s\n", ws.Message)
+			}
+			fmt.Printf("class:      %s\n", ws.Class)
+			if ws.Image != "" {
+				fmt.Printf("image:      %s\n", ws.Image)
+			}
+			if ws.Storage != "" {
+				fmt.Printf("storage:    %s\n", ws.Storage)
+			}
+			if len(ws.GitRepos) > 0 {
+				fmt.Printf("git repos:  %s\n", strings.Join(ws.GitRepos, ", "))
+			}
+			if ws.PodName != "" {
+				fmt.Printf("pod:        %s\n", ws.PodName)
+			}
+			fmt.Printf("ssh host:   %s\n", ws.SSHHost)
+			fmt.Printf("created:    %s\n", ws.CreatedAt)
+			fmt.Printf("connect:    devws ssh %s   (VS Code: devws code %s)\n", ws.Name, ws.Name)
+			return nil
 		},
 	}
 }
@@ -156,6 +220,106 @@ func simpleWorkspaceAction(action, name string) error {
 	}
 	fmt.Println(action + " requested for workspace " + name)
 	return nil
+}
+
+func workspaceLogsCmd() *cobra.Command {
+	var (
+		follow    bool
+		tail      int
+		container string
+		previous  bool
+	)
+	cmd := &cobra.Command{
+		Use:   "logs NAME",
+		Short: "Stream workspace pod logs",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cfg, err := LoadConfig()
+			if err != nil {
+				return err
+			}
+			// Ctrl-C aborts the request instead of leaving a dangling
+			// follow connection on the server.
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			q := url.Values{}
+			q.Set("tail", strconv.Itoa(tail))
+			if container != "" {
+				q.Set("container", container)
+			}
+			if follow {
+				q.Set("follow", "true")
+			}
+			if previous {
+				q.Set("previous", "true")
+			}
+			stream, err := apiStream(ctx, cfg, "/api/workspaces/"+args[0]+"/logs?"+q.Encode())
+			if err != nil {
+				return err
+			}
+			defer stream.Close()
+			_, err = io.Copy(os.Stdout, stream)
+			// Ctrl-C on a live tail cancels the stream mid-read; that is
+			// a normal way to end it (Go 1.27 reports the signal as a
+			// context.Canceled cause), not an error.
+			if err != nil && errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		},
+	}
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep the stream open (live tail)")
+	cmd.Flags().IntVar(&tail, "tail", 200, "number of trailing lines (0 = all)")
+	cmd.Flags().StringVar(&container, "container", "", "container to read (default \"workspace\"; init containers: git-clone, fix-permissions)")
+	cmd.Flags().BoolVar(&previous, "previous", false, "read the previous (restarted) container instance")
+	return cmd
+}
+
+func workspaceEventsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "events NAME",
+		Short: "Show kubernetes events for a workspace",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cfg, err := LoadConfig()
+			if err != nil {
+				return err
+			}
+			items, err := apiGet[[]eventView](cfg, "/api/workspaces/"+args[0]+"/events")
+			if err != nil {
+				return err
+			}
+			if len(*items) == 0 {
+				fmt.Println("no events recorded")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 4, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "LAST SEEN\tTYPE\tREASON\tOBJECT\tMESSAGE")
+			for _, ev := range *items {
+				lastSeen := ev.LastSeen
+				if t, err := time.Parse(time.RFC3339, ev.LastSeen); err == nil {
+					lastSeen = humanAge(time.Since(t))
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", lastSeen, ev.Type, ev.Reason, ev.Object, ev.Message)
+			}
+			return w.Flush()
+		},
+	}
+}
+
+// humanAge renders a duration the way people read event ages.
+func humanAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // gatewayHostPort resolves the SSH gateway endpoint from the CLI config.

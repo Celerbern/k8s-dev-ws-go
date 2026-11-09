@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -27,15 +28,48 @@ func init() {
 	utilruntime.Must(devwsv1alpha1.AddToScheme(k8sScheme))
 }
 
-// userCmd provides `devws user create`, the admin bootstrap path that talks
-// directly to the Kubernetes API (no devws server required).
+// userCmd provides `devws user create` (admin bootstrap directly against
+// the Kubernetes API) and `devws user list` (admin overview via the REST
+// API of a logged-in admin).
 func userCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "user",
-		Short: "Manage users directly via the Kubernetes API (admin bootstrap)",
+		Short: "Manage users (create via kubeconfig bootstrap, list via the API)",
 	}
-	cmd.AddCommand(userCreateCmd())
+	cmd.AddCommand(userCreateCmd(), userListCmd())
 	return cmd
+}
+
+func userListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List users (requires an admin login)",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg, err := LoadConfig()
+			if err != nil {
+				return err
+			}
+			items, err := apiGet[[]userView](cfg, "/api/users")
+			if err != nil {
+				return err
+			}
+			if len(*items) == 0 {
+				fmt.Println("no users")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 4, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "USERNAME\tROLE\tEMAIL\tKEYS\tWORKSPACES\tCREATED")
+			for _, u := range *items {
+				disabled := ""
+				if u.Disabled {
+					disabled = " (disabled)"
+				}
+				fmt.Fprintf(w, "%s%s\t%s\t%s\t%d\t%d\t%s\n",
+					u.Username, disabled, u.Role, u.Email, len(u.SSHPublicKeys), u.WorkspaceCount, u.CreatedAt)
+			}
+			return w.Flush()
+		},
+	}
 }
 
 func userCreateCmd() *cobra.Command {
