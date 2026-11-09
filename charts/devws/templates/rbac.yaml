@@ -19,6 +19,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # Pod log streaming for the UI and CLI (subresource of pods).
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -31,9 +35,11 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events are recorded by the controllers and listed for the workspace
+  # detail view.
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create", "update", "patch"]
+    verbs: ["get", "list", "create", "update", "patch"]
 ---
 # The platform config (devws-config ConfigMap) lives in the release
 # namespace; the apiserver only needs to read it there.

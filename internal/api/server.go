@@ -30,18 +30,21 @@ type Server struct {
 	scheme     *runtime.Scheme
 	cfg        *config.Config
 	sessions   *auth.SessionManager
+	kube       KubeClient
 	mux        *http.ServeMux
 	httpServer *http.Server
 }
 
-// New builds the server and registers all routes.
-func New(addr string, c client.Client, scheme *runtime.Scheme, cfg *config.Config, sessions *auth.SessionManager) *Server {
+// New builds the server and registers all routes. kube may be nil (log and
+// event endpoints then answer 501); tests inject a fake.
+func New(addr string, c client.Client, scheme *runtime.Scheme, cfg *config.Config, sessions *auth.SessionManager, kube KubeClient) *Server {
 	s := &Server{
 		Addr:     addr,
 		client:   c,
 		scheme:   scheme,
 		cfg:      cfg,
 		sessions: sessions,
+		kube:     kube,
 	}
 	s.routes()
 	return s
@@ -86,6 +89,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("DELETE /api/workspaces/{name}", s.requireAuth(s.handleDeleteWorkspace))
 	mux.HandleFunc("POST /api/workspaces/{name}/start", s.requireAuth(s.handleStartWorkspace))
 	mux.HandleFunc("POST /api/workspaces/{name}/stop", s.requireAuth(s.handleStopWorkspace))
+	mux.HandleFunc("GET /api/workspaces/{name}/logs", s.requireAuth(s.handleWorkspaceLogs))
+	mux.HandleFunc("GET /api/workspaces/{name}/events", s.requireAuth(s.handleWorkspaceEvents))
 
 	// admin
 	mux.HandleFunc("GET /api/admin/usage", s.requireAdmin(s.handleAdminUsage))

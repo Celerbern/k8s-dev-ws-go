@@ -130,8 +130,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// HTTP API + web UI.
-	if err := mgr.Add(api.New(webAddr, mgr.GetClient(), mgr.GetScheme(), platformCfg, sessions)); err != nil {
+	// HTTP API + web UI. The kube client (client-go) provides pod log
+	// streaming and uncached event listing, which the manager's cached
+	// client cannot do.
+	kubeClient, err := api.NewKubeClient(restCfg)
+	if err != nil {
+		logger.Error(err, "cannot create kube client")
+		os.Exit(1)
+	}
+	if err := mgr.Add(api.New(webAddr, mgr.GetClient(), mgr.GetScheme(), platformCfg, sessions, kubeClient)); err != nil {
 		logger.Error(err, "cannot add api server")
 		os.Exit(1)
 	}
