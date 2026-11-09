@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -222,5 +224,168 @@ func TestWorkspaceDisabledUserStopsPod(t *testing.T) {
 	err := r.Get(context.Background(), types.NamespacedName{Namespace: "devws-alice", Name: "main"}, &corev1.Pod{})
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("disabled user must not have pods, got %v", err)
+	}
+}
+
+// fakeRecorder collects controller events.
+type fakeRecorder struct {
+	events []string
+}
+
+func (f *fakeRecorder) Eventf(_ runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+	f.events = append(f.events, eventtype+"/"+reason+": "+fmt.Sprintf(messageFmt, args...))
+}
+
+func reconcileNTimes(t *testing.T, r *WorkspaceReconciler, ns, name string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+}
+
+func TestGitCloneContainerAndAnnotation(t *testing.T) {
+	user := &devwsv1alpha1.User{}
+	user.Name = "alice"
+	ws := &devwsv1alpha1.Workspace{}
+	ws.Name = "main"
+	ws.Namespace = "devws-alice"
+	ws.Spec.UserRef = "alice"
+	ws.Spec.GitRepos = []string{"https://example.com/repo.git"}
+	r := newWorkspaceReconciler(t, user, ws)
+	reconcileNTimes(t, r, "devws-alice", "main", 3)
+
+	pod := &corev1.Pod{}
+	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "devws-alice", Name: "main"}, pod); err != nil {
+		t.Fatalf("pod not created: %v", err)
+	}
+	found := false
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name == "git-clone" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("git-clone init container must exist when gitRepos are set")
+	}
+	if want := gitReposHash(ws.Spec.GitRepos); pod.Annotations[gitReposAnnotation] != want {
+		t.Fatalf("pod must carry the git repos hash %q, got %q", want, pod.Annotations[gitReposAnnotation])
+	}
+}
+
+func TestGitCloneFailureFailsWorkspace(t *testing.T) {
+	user := &devwsv1alpha1.User{}
+	user.Name = "alice"
+	ws := &devwsv1alpha1.Workspace{}
+	ws.Name = "main"
+	ws.Namespace = "devws-alice"
+	ws.Spec.UserRef = "alice"
+	ws.Spec.GitRepos = []string{"https://example.com/repo.git"}
+	rec := &fakeRecorder{}
+	r := newWorkspaceReconciler(t, user, ws)
+	r.Recorder = rec
+	reconcileNTimes(t, r, "devws-alice", "main", 3)
+
+	ctx := context.Background()
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, pod); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the git-clone init container failing. Under the pod's
+	// default restart policy the kubelet crash-loops it while the pod
+	// itself stays Pending — the controller must still surface Failed.
+	pod.Status.Phase = corev1.PodPending
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "git-clone",
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 128}},
+	}}
+	if err := r.Status().Update(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "devws-alice", Name: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	updated := &devwsv1alpha1.Workspace{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != devwsv1alpha1.WorkspacePhaseFailed {
+		t.Fatalf("failed clone must fail the workspace, got %q", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "git clone failed") {
+		t.Fatalf("message must point at the clone failure, got %q", updated.Status.Message)
+	}
+	warned := false
+	for _, e := range rec.events {
+		if strings.HasPrefix(e, "Warning/WorkspaceFailed:") && strings.Contains(e, "git clone failed") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("a warning event must be recorded on the Failed transition, got %v", rec.events)
+	}
+
+	// The crash-looping waiting state must be detected as well.
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "git-clone",
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+	}}
+	if err := r.Status().Update(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "devws-alice", Name: "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	updated = &devwsv1alpha1.Workspace{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != devwsv1alpha1.WorkspacePhaseFailed {
+		t.Fatalf("crash-looping init must keep the workspace Failed, got %q", updated.Status.Phase)
+	}
+	if !strings.Contains(updated.Status.Message, "git clone failed") {
+		t.Fatalf("crash-loop message must point at the clone failure, got %q", updated.Status.Message)
+	}
+}
+
+func TestGitReposChangeRecreatesPod(t *testing.T) {
+	user := &devwsv1alpha1.User{}
+	user.Name = "alice"
+	ws := &devwsv1alpha1.Workspace{}
+	ws.Name = "main"
+	ws.Namespace = "devws-alice"
+	ws.Spec.UserRef = "alice"
+	ws.Spec.GitRepos = []string{"https://example.com/a.git"}
+	r := newWorkspaceReconciler(t, user, ws)
+	reconcileNTimes(t, r, "devws-alice", "main", 3)
+
+	ctx := context.Background()
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, pod); err != nil {
+		t.Fatal(err)
+	}
+	if got := pod.Annotations[gitReposAnnotation]; got != gitReposHash(ws.Spec.GitRepos) {
+		t.Fatalf("initial hash wrong: %q", got)
+	}
+
+	// Add a repo; the pod must be recreated with the new hash.
+	fresh := &devwsv1alpha1.Workspace{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, fresh); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Spec.GitRepos = []string{"https://example.com/a.git", "https://example.com/b.git"}
+	if err := r.Update(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	reconcileNTimes(t, r, "devws-alice", "main", 3)
+
+	pod = &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, pod); err != nil {
+		t.Fatalf("pod must be recreated after gitRepos change: %v", err)
+	}
+	if want := gitReposHash(fresh.Spec.GitRepos); pod.Annotations[gitReposAnnotation] != want {
+		t.Fatalf("pod must carry the new git repos hash %q, got %q", want, pod.Annotations[gitReposAnnotation])
 	}
 }

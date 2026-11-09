@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"sort"
 	"strings"
@@ -42,9 +43,10 @@ type eventRecorder interface {
 // +kubebuilder:rbac:groups=devws.io,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=devws.io,resources=workspaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;create;update;patch
 
 // Reconcile drives the workspace towards its desired state.
 func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -155,10 +157,17 @@ func (r *WorkspaceReconciler) updatePhase(ctx context.Context, ws *devwsv1alpha1
 				requeue = ctrl.Result{RequeueAfter: 2 * time.Second}
 			}
 		case corev1.PodPending:
-			if m := podBlockedMessage(pod); m != "" {
-				msg = m
-			} else {
+			msg = podBlockedMessage(pod)
+			if msg == "" {
 				msg = "waiting for the workspace pod to be scheduled"
+			}
+			// A failed init container (e.g. git-clone) leaves the pod
+			// Pending forever under the default restart policy — the
+			// kubelet just crash-loops it. Surface that as Failed; the
+			// status returns to Provisioning/Running on its own if a
+			// retry eventually succeeds.
+			if initContainerFailed(pod) {
+				phase = devwsv1alpha1.WorkspacePhaseFailed
 			}
 			requeue = ctrl.Result{RequeueAfter: 3 * time.Second}
 		case corev1.PodFailed:
@@ -178,8 +187,14 @@ func (r *WorkspaceReconciler) updatePhase(ctx context.Context, ws *devwsv1alpha1
 	if pod != nil {
 		desired.PodName = pod.Name
 	}
+	prevPhase := ws.Status.Phase
 	if err := r.patchStatus(ctx, ws, desired); err != nil {
 		return ctrl.Result{}, err
+	}
+	// Announce failures loudly: a warning event on the transition into
+	// Failed (image pull errors, git clone failures, crashed containers).
+	if phase == devwsv1alpha1.WorkspacePhaseFailed && prevPhase != phase && r.Recorder != nil {
+		r.Recorder.Eventf(ws, corev1.EventTypeWarning, "WorkspaceFailed", "%s", msg)
 	}
 	return requeue, nil
 }
@@ -193,14 +208,47 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
+// initContainerFailed reports whether an init container has failed
+// (terminated non-zero or crash-looping). Under the pod's default
+// restart policy such a pod stays Pending forever.
+func initContainerFailed(pod *corev1.Pod) bool {
+	for _, s := range pod.Status.InitContainerStatuses {
+		if s.State.Terminated != nil && s.State.Terminated.ExitCode != 0 {
+			return true
+		}
+		if s.State.Waiting != nil && s.State.Waiting.Reason == "CrashLoopBackOff" {
+			return true
+		}
+	}
+	return false
+}
+
+// initFailureMessage renders a human-readable reason for a failed init
+// container.
+func initFailureMessage(name string, exitCode int32) string {
+	if name == "git-clone" {
+		if exitCode != 0 {
+			return fmt.Sprintf("git clone failed (exit code %d) — check workspace logs, container git-clone", exitCode)
+		}
+		return "git clone failed — check workspace logs, container git-clone"
+	}
+	if exitCode != 0 {
+		return fmt.Sprintf("init %q exited with code %d", name, exitCode)
+	}
+	return fmt.Sprintf("init %q is failing (crash loop)", name)
+}
+
 // podBlockedMessage extracts a human-readable reason for a stuck pod.
 func podBlockedMessage(pod *corev1.Pod) string {
 	for _, s := range pod.Status.InitContainerStatuses {
+		if s.State.Waiting != nil && s.State.Waiting.Reason == "CrashLoopBackOff" {
+			return initFailureMessage(s.Name, 0)
+		}
 		if s.State.Waiting != nil && s.State.Waiting.Reason != "" && s.State.Waiting.Reason != "PodInitializing" {
 			return fmt.Sprintf("init: %s: %s", s.State.Waiting.Reason, s.State.Waiting.Message)
 		}
 		if s.State.Terminated != nil && s.State.Terminated.ExitCode != 0 {
-			return fmt.Sprintf("init %q exited with code %d", s.Name, s.State.Terminated.ExitCode)
+			return initFailureMessage(s.Name, s.State.Terminated.ExitCode)
 		}
 	}
 	for _, s := range pod.Status.ContainerStatuses {
@@ -315,6 +363,19 @@ func (r *WorkspaceReconciler) ensurePod(ctx context.Context, ws *devwsv1alpha1.W
 			return nil, nil
 		}
 	}
+	// Recreate when gitRepos changed, so newly listed repos are cloned on
+	// the next start (already-cloned repos are skipped by the init
+	// container).
+	if want := gitReposHash(ws.Spec.GitRepos); pod.Annotations[gitReposAnnotation] != want {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(ws, corev1.EventTypeNormal, "WorkspaceRestarting",
+				"recreating pod for git repository list change")
+		}
+		if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		return nil, nil
+	}
 	return pod, nil
 }
 
@@ -324,6 +385,25 @@ func (r *WorkspaceReconciler) patchStatus(ctx context.Context, ws *devwsv1alpha1
 		return r.Status().Update(ctx, ws)
 	}
 	return nil
+}
+
+// gitReposAnnotation on workspace pods carries a hash of spec.gitRepos; a
+// change triggers pod recreation so new repos get cloned.
+const gitReposAnnotation = "devws.io/git-repos"
+
+// gitReposHash identifies a gitRepos list.
+func gitReposHash(repos []string) string {
+	cleaned := make([]string, 0, len(repos))
+	for _, r := range repos {
+		if s := strings.TrimSpace(r); s != "" {
+			cleaned = append(cleaned, s)
+		}
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(cleaned, "\n")))
+	return fmt.Sprintf("sha256-%x", sum)
 }
 
 // buildWorkspacePod renders the workspace pod spec.
@@ -366,16 +446,26 @@ func buildWorkspacePod(scheme *runtime.Scheme, ws *devwsv1alpha1.Workspace, user
 			Name:            "git-clone",
 			Image:           image,
 			ImagePullPolicy: corev1.PullIfNotPresent,
+			// Clones each repo that is not present yet. A failed clone
+			// does not stop the remaining repos, but fails the container
+			// so the failure is surfaced in the workspace status, events
+			// and this container's logs.
 			Command: []string{"/bin/sh", "-ec", `
-set -e
-printf '%s\n' "$DEVWS_GIT_REPOS" | while IFS= read -r repo; do
+status=0
+while IFS= read -r repo; do
   [ -z "$repo" ] && continue
   name=$(basename "$repo" .git)
   if [ ! -d "` + WorkspaceHome + `/$name/.git" ]; then
     echo "devws: cloning $repo"
-    git clone "$repo" "` + WorkspaceHome + `/$name" || echo "devws: WARNING: failed to clone $repo"
+    if ! git clone "$repo" "` + WorkspaceHome + `/$name"; then
+      echo "devws: ERROR: failed to clone $repo" >&2
+      status=1
+    fi
   fi
-done
+done <<EOF
+$DEVWS_GIT_REPOS
+EOF
+exit $status
 `},
 			Env: []corev1.EnvVar{
 				{Name: "HOME", Value: WorkspaceHome},
@@ -404,6 +494,7 @@ done
 				LabelUser:      user.Name,
 				LabelWorkspace: ws.Name,
 			}),
+			Annotations: map[string]string{gitReposAnnotation: gitReposHash(ws.Spec.GitRepos)},
 		},
 		Spec: corev1.PodSpec{
 			SecurityContext: &corev1.PodSecurityContext{
