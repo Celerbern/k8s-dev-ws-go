@@ -1,0 +1,15 @@
+apiVersion: v2
+name: devws
+description: devws — develop applications inside Kubernetes. Per-user
+  workspaces reachable from local VS Code / JetBrains IDEs over SSH, with an
+  admin console and persistent home directories.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/celerbern/k8s-dev-ws-go
+keywords:
+  - development
+  - workspaces
+  - remote-development
+maintainers:
+  - name: devws

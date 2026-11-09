@@ -1,0 +1,108 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+rules:
+  # devws custom resources are the source of truth.
+  - apiGroups: ["devws.io"]
+    resources: ["users", "workspaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["devws.io"]
+    resources: ["users/status", "workspaces/status"]
+    verbs: ["get", "update", "patch"]
+  # Per-user namespaces and their contents.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+---
+# The platform config (devws-config ConfigMap) lives in the release
+# namespace; the apiserver only needs to read it there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}-config
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}-config
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}-config
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "devws.serviceAccountName" . }}
+    namespace: {{ include "devws.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "devws.serviceAccountName" . }}
+    namespace: {{ include "devws.namespace" . }}
+---
+# The admin bootstrap job only needs to create/update User CRs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}-bootstrap
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["devws.io"]
+    resources: ["users"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}-bootstrap
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "devws.name" . }}-{{ .Release.Namespace }}-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "devws.serviceAccountName" . }}-bootstrap
+    namespace: {{ include "devws.namespace" . }}

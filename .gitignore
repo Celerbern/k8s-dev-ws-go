@@ -1,0 +1,24 @@
+# Binaries
+bin/
+dist/
+*.test
+*.out
+
+# Node
+node_modules/
+web/package-lock.json.bak
+
+# Built web assets (placeholder .gitkeep and placeholder.html are tracked;
+# the built SPA is regenerated with `make build-web`).
+internal/web/dist/*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local clusters / tooling
+kubeconfig*

@@ -1,0 +1,77 @@
+{{- if and .Values.admin.username .Values.admin.password }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "devws.serviceAccountName" . }}-bootstrap
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "devws.name" . }}-bootstrap-admin
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+type: Opaque
+stringData:
+  password: {{ .Values.admin.password | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "devws.name" . }}-bootstrap-admin
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        {{- include "devws.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "devws.serviceAccountName" . }}-bootstrap
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ include "devws.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/devws"]
+          args:
+            - user
+            - create
+            - --username={{ .Values.admin.username }}
+            - --role=admin
+            - --password-env=DEVWS_ADMIN_PASSWORD
+          env:
+            - name: DEVWS_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "devws.name" . }}-bootstrap-admin
+                  key: password
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

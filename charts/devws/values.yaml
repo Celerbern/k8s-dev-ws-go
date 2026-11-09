@@ -1,0 +1,87 @@
+# Default values for the devws chart.
+
+# Control plane image (API server + controllers + SSH gateway + devws CLI).
+image:
+  repository: ghcr.io/celerbern/devws-apiserver
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Image used for workspace pods by default (overridable per workspace).
+workspaceImage: ghcr.io/celerbern/devws-workspace:0.1.0
+
+# Bootstrap admin created by a post-install job. The password is only read
+# by the job; leave empty to skip bootstrap (manage User CRs yourself).
+admin:
+  username: admin
+  password: "" # e.g. --set admin.password=$(openssl rand -base64 18)
+
+# Platform configuration rendered into the devws-config ConfigMap.
+config:
+  # Advertised SSH endpoint (host or host:port) users connect to.
+  sshHost: ssh.devws.example.com
+  # Storage class for workspace PVCs; empty = cluster default.
+  storageClass: ""
+  defaultClass: medium
+  classes:
+    small:
+      cpu: "2"
+      memory: 4Gi
+      storage: 10Gi
+    medium:
+      cpu: "4"
+      memory: 8Gi
+      storage: 20Gi
+    large:
+      cpu: "8"
+      memory: 16Gi
+      storage: 50Gi
+
+service:
+  web:
+    type: ClusterIP
+    port: 80
+  ssh:
+    # LoadBalancer exposes port 22 directly. On clusters without a load
+    # balancer use NodePort (set nodePort below) or tunnel port 22 through
+    # your ingress controller.
+    type: LoadBalancer
+    port: 22
+    nodePort: "" # e.g. 30022 when type is NodePort
+
+ingress:
+  enabled: false
+  className: ""
+  host: devws.example.com
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Number of apiserver replicas. Controllers use leader election only with
+# more than one replica... they always run; multiple replicas are safe for
+# the API/SSH gateways.
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: "" # defaults to devws-apiserver
+
+metrics:
+  enabled: false
+  port: 8081
+
+podAnnotations: {}

@@ -1,0 +1,41 @@
+devws is installed in namespace: {{ include "devws.namespace" . }}
+
+1. Wait for the control plane to become ready:
+
+   kubectl -n {{ include "devws.namespace" . }} rollout status deploy/{{ include "devws.name" . }}-apiserver
+
+{{- if and .Values.admin.username .Values.admin.password }}
+
+2. Bootstrap admin "{{ .Values.admin.username }}" was created (or updated)
+   by a post-install job. Sign in with the password you set via
+   `--set admin.password=...`.
+{{- else }}
+
+2. No bootstrap admin was configured. Create one manually:
+
+   devws user create --username admin --role admin
+   # (run with a kubeconfig that can create devws.io User CRs)
+{{- end }}
+
+3. Access the web UI:
+
+{{- if .Values.ingress.enabled }}
+   https://{{ .Values.ingress.host }}/
+{{- else }}
+   kubectl -n {{ include "devws.namespace" . }} port-forward svc/{{ include "devws.name" . }}-web 8080:80
+   then open http://localhost:8080
+{{- end }}
+
+4. SSH access (VS Code Remote-SSH / JetBrains Gateway):
+
+   The gateway is exposed via a {{ .Values.service.ssh.type }} service on port {{ .Values.service.ssh.port }}.
+   Users register an SSH key in the web UI, then run:
+
+   devws login <server-url>
+   devws ssh-config --write
+   ssh devws-<workspace-name>
+{{- if not .Values.ingress.enabled }}
+
+NOTE: ingress is disabled; for production set ingress.enabled=true and
+      config.sshHost to your SSH endpoint.
+{{- end }}

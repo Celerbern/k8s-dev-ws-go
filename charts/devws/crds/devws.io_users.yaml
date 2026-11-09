@@ -1,0 +1,260 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: users.devws.io
+spec:
+  group: devws.io
+  names:
+    kind: User
+    listKind: UserList
+    plural: users
+    singular: user
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.email
+      name: Email
+      type: string
+    - jsonPath: .spec.role
+      name: Role
+      type: string
+    - jsonPath: .spec.disabled
+      name: Disabled
+      type: boolean
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          User is the platform account. Each user gets a dedicated namespace
+          (devws-<name>) holding their workspaces.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: UserSpec defines the desired state of a User.
+            properties:
+              apiTokens:
+                description: APITokens are bearer tokens used by the devws CLI.
+                items:
+                  description: |-
+                    APIToken is a bearer token used by the devws CLI. Only the bcrypt hash of
+                    the token is stored; Prefix holds the first characters of the token so
+                    lookups can skip bcrypt verification for non-matching tokens.
+                  properties:
+                    createdAt:
+                      description: CreatedAt records when the token was issued.
+                      format: date-time
+                      type: string
+                    expiresAt:
+                      description: ExpiresAt optionally limits the token lifetime.
+                      format: date-time
+                      type: string
+                    hash:
+                      description: Hash is the bcrypt hash of the full token.
+                      type: string
+                    lastUsedAt:
+                      description: LastUsedAt records the last successful authentication.
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is a short label chosen by the user (e.g.
+                        "cli").
+                      type: string
+                    prefix:
+                      description: Prefix is the leading characters of the token (not
+                        secret).
+                      type: string
+                  required:
+                  - hash
+                  - name
+                  type: object
+                type: array
+              disabled:
+                description: |-
+                  Disabled prevents login, CLI token use and SSH access, and stops all
+                  of the user's workspaces.
+                type: boolean
+              displayName:
+                description: DisplayName is the human-friendly name shown in the dashboard.
+                type: string
+              email:
+                description: Email address of the user (used for display and future
+                  notifications).
+                type: string
+              passwordHash:
+                description: PasswordHash is a bcrypt hash of the user's dashboard/CLI
+                  password.
+                type: string
+              quotas:
+                description: Quotas limits the resources the user may consume.
+                properties:
+                  cpu:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: CPU is the total CPU (cores) available to the user's
+                      workspaces, e.g. "8".
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maxWorkspaces:
+                    description: MaxWorkspaces is the maximum number of workspaces
+                      the user may create.
+                    minimum: 0
+                    type: integer
+                  memory:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Memory is the total memory available to the user's
+                      workspaces, e.g. "16Gi".
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storage:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Storage is the total persistent storage available,
+                      e.g. "100Gi".
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
+              role:
+                default: user
+                description: Role is "user" or "admin". Admins can manage all users
+                  and workspaces.
+                enum:
+                - user
+                - admin
+                type: string
+              sshPublicKeys:
+                description: SSHPublicKeys are the public keys the user may authenticate
+                  with.
+                items:
+                  description: |-
+                    SSHKey is a public SSH key registered by a user. The key is used both to
+                    authenticate to the devws SSH gateway and to log in to the user's
+                    workspace pods.
+                  properties:
+                    createdAt:
+                      description: CreatedAt records when the key was registered.
+                      format: date-time
+                      type: string
+                    key:
+                      description: |-
+                        Key is a public key in OpenSSH authorized_keys format
+                        (e.g. "ssh-ed25519 AAAAC3... user@host").
+                      type: string
+                    name:
+                      description: Name is a short label chosen by the user (e.g.
+                        "laptop").
+                      type: string
+                  required:
+                  - key
+                  - name
+                  type: object
+                type: array
+            type: object
+          status:
+            description: UserStatus defines the observed state of a User.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              message:
+                description: Message carries human-readable detail about the current
+                  phase.
+                type: string
+              namespace:
+                description: Namespace is the per-user namespace managed for this
+                  user.
+                type: string
+              phase:
+                description: Phase is "Ready", "Provisioning" or "Terminating".
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

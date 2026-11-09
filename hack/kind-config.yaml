@@ -1,0 +1,12 @@
+# kind cluster config for devws development.
+#
+# Maps host port 2222 to the SSH gateway (NodePort 30022) so local IDEs can
+# connect exactly like in production.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30022
+        hostPort: 2222
+        protocol: TCP

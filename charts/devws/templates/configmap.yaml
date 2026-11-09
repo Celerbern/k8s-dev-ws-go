@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devws-config
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+data:
+  workspaceImage: {{ .Values.workspaceImage | quote }}
+  defaultClass: {{ .Values.config.defaultClass | quote }}
+  storageClass: {{ .Values.config.storageClass | quote }}
+  sshHost: {{ .Values.config.sshHost | quote }}
+  classes: {{ .Values.config.classes | toJson | quote }}
