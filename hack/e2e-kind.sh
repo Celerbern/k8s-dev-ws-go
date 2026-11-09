@@ -130,7 +130,7 @@ AUTH="Authorization: Bearer $TOKEN"
 
 step "Creating workspace as user e2e"
 curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$WORKSPACE\",\"class\":\"small\"}" \
+  -d "{\"name\":\"$WORKSPACE\",\"class\":\"tiny\"}" \
   "$API/api/workspaces" | grep -q "\"name\":\"$WORKSPACE\""
 echo "ok — waiting for it to run"
 for _ in $(seq 1 90); do
@@ -214,6 +214,80 @@ step "Admin usage endpoint"
 curl -fsS -b "$SSH_KEY_DIR/cookies" "$API/api/admin/usage" | grep -q '"workspaces":1'
 echo "ok"
 
+step "Workspace logs API"
+LOGS=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$WORKSPACE/logs?tail=100")
+[[ -n "$LOGS" ]] || { echo "FAILED: logs endpoint returned nothing"; exit 1; }
+echo "$LOGS" | head -3
+if curl -fsS -H "$AUTH" "$API/api/workspaces/$WORKSPACE/logs?container=nope" >/dev/null 2>&1; then
+  echo "FAILED: unknown container must 404"; exit 1
+fi
+echo "ok"
+
+step "Workspace events API"
+EVENTS=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$WORKSPACE/events")
+echo "$EVENTS" | grep -q '"WorkspaceStarting"' || { echo "FAILED: no WorkspaceStarting event: $EVENTS"; exit 1; }
+echo "ok"
+
+step "gitRepos pre-clone (public repo)"
+GIT_WS="e2e-git"
+GIT_REPO="https://github.com/octocat/Hello-World.git"
+curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$GIT_WS\",\"class\":\"tiny\",\"gitRepos\":[\"$GIT_REPO\"]}" \
+  "$API/api/workspaces" | grep -q "\"name\":\"$GIT_WS\""
+for _ in $(seq 1 90); do
+  PHASE=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$GIT_WS" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
+  [[ "$PHASE" == "Running" ]] && break
+  [[ "$PHASE" == "Failed" ]] && { echo "FAILED: git workspace Failed"; exit 1; }
+  sleep 2
+done
+[[ "$PHASE" == "Running" ]] || { echo "FAILED: git workspace never became Running (phase: $PHASE)"; exit 1; }
+# The clone ran in the git-clone init container: its logs mention the clone.
+curl -fsS -H "$AUTH" "$API/api/workspaces/$GIT_WS/logs?container=git-clone&tail=all" | grep -q "devws: cloning $GIT_REPO" || {
+  echo "FAILED: git-clone logs do not mention the clone"; exit 1
+}
+# And the repo landed on the persistent volume.
+GIT_SSH_HOST=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$GIT_WS" | sed -n 's/.*"sshHost":"\([^"]*\)".*/\1/p')
+cat >> "$SSH_KEY_DIR/ssh_config" <<EOF
+
+Host devws-$GIT_WS
+  HostName $GIT_SSH_HOST
+  Port 2222
+  User devws
+  ProxyJump e2e@127.0.0.1:$SSH_PORT
+  UserKnownHostsFile /dev/null
+  StrictHostKeyChecking no
+  IdentityFile $SSH_KEY_DIR/id_ed25519
+EOF
+for i in $(seq 1 36); do
+  if ssh -F "$SSH_KEY_DIR/ssh_config" -o ConnectTimeout=15 devws-$GIT_WS 'test -d /home/devws/Hello-World/.git' 2>/dev/null; then
+    echo "repo cloned onto the workspace volume ✓"; break
+  fi
+  sleep 5
+done
+ssh -F "$SSH_KEY_DIR/ssh_config" devws-$GIT_WS 'test -d /home/devws/Hello-World/.git' || {
+  echo "FAILED: Hello-World was not cloned into the workspace"; exit 1
+}
+
+step "git clone failure surfaces in status and events"
+BAD_WS="e2e-bad"
+curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$BAD_WS\",\"class\":\"tiny\",\"gitRepos\":[\"https://github.com/octocat/devws-no-such-repo-e2e.git\"]}" \
+  "$API/api/workspaces" >/dev/null
+for _ in $(seq 1 60); do
+  PHASE=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$BAD_WS" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
+  [[ "$PHASE" == "Failed" ]] && break
+  sleep 2
+done
+[[ "$PHASE" == "Failed" ]] || { echo "FAILED: bad repo workspace never Failed (phase: $PHASE)"; exit 1; }
+curl -fsS -H "$AUTH" "$API/api/workspaces/$BAD_WS" | grep -q "git clone failed" || {
+  echo "FAILED: status message does not mention the clone failure"; exit 1
+}
+curl -fsS -H "$AUTH" "$API/api/workspaces/$BAD_WS/events" | grep -q '"WorkspaceFailed"' || {
+  echo "FAILED: no WorkspaceFailed event for bad repo"; exit 1
+}
+echo "clone failure surfaced ✓ — cleaning up"
+curl -fsS -X DELETE -H "$AUTH" "$API/api/workspaces/$BAD_WS" >/dev/null
+
 echo
 echo "====================================================================="
 echo "E2E PASSED"
@@ -223,6 +297,8 @@ echo "  export PATH=\"$PWD/bin:\$PATH\""
 echo "  bin/devws login $API --ssh-host 127.0.0.1 --ssh-port $SSH_PORT   # user: e2e / $USER_PASSWORD"
 echo "  bin/devws workspace create demo"
 echo "  bin/devws ssh-config --write && ssh devws-demo"
+echo "  bin/devws workspace logs demo -f     # live log tail"
+echo "  bin/devws code demo                  # VS Code Remote-SSH"
 echo "Web UI: $API (admin / $ADMIN_PASSWORD) — requires the port-forward:"
 echo "  kubectl -n $RELEASE_NS port-forward svc/devws-web 18080:80"
 echo "Tear down with: kind delete cluster --name $KIND_NAME"

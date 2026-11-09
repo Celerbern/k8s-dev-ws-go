@@ -25,6 +25,10 @@ config:
   storageClass: ""
   defaultClass: medium
   classes:
+    tiny:
+      cpu: 250m
+      memory: 512Mi
+      storage: 5Gi
     small:
       cpu: "2"
       memory: 4Gi

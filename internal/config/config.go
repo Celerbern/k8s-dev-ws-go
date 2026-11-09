@@ -52,6 +52,7 @@ func Default() *Config {
 		StorageClass:   "",
 		SSHHost:        "ssh.devws.local",
 		Classes: map[string]ClassSpec{
+			"tiny":   {CPU: "250m", Memory: "512Mi", Storage: "5Gi"},
 			"small":  {CPU: "2", Memory: "4Gi", Storage: "10Gi"},
 			"medium": {CPU: "4", Memory: "8Gi", Storage: "20Gi"},
 			"large":  {CPU: "8", Memory: "16Gi", Storage: "50Gi"},
