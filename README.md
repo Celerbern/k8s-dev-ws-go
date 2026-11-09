@@ -86,6 +86,9 @@ In the web UI (or with the CLI):
    - **JetBrains**: Gateway → SSH → `devws-main`.
    - **Terminal**: `ssh devws-main`.
 
+   Step-by-step IDE setup (including troubleshooting) lives in
+   [docs/ide-setup.md](docs/ide-setup.md).
+
 With the CLI:
 
 ```bash
@@ -96,10 +99,19 @@ bin/devws key add --name laptop < ~/.ssh/id_ed25519.pub
 bin/devws ssh-config --write        # writes ~/.ssh/config
 ssh devws-main
 bin/devws code main                 # opens VS Code directly
+bin/devws workspace logs main -f    # live log tail
+bin/devws workspace events main     # what the controller has been doing
 ```
 
 Your home directory (`/home/devws`) persists across stop/start; `git clone`,
-ssh keys, IDE caches and installed tools all survive.
+ssh keys, IDE caches and installed tools all survive. Workspaces created
+with `gitRepos` (web UI or `devws workspace create --git-repo <url>`) clone
+those repos on first start; a failed clone fails the workspace with the
+reason in its status, events and the `git-clone` container logs.
+
+The web UI has a per-workspace detail view: connection card with copy-paste
+ssh config and IDE guides, a live log viewer (per container, follow mode)
+and the workspace's kubernetes events.
 
 ## How SSH routing works
 
@@ -119,7 +131,7 @@ restart the workspace to apply them immediately.
 | Component | What it does |
 |---|---|
 | `cmd/devws-apiserver` | Single Go binary: REST API + embedded Vue UI, `User`/`Workspace` controllers, SSH gateway |
-| `cmd/devws` | CLI: login, workspace lifecycle, `ssh-config`, `key`, `token`, admin bootstrap |
+| `cmd/devws` | CLI: login, workspace lifecycle + logs/events, `ssh-config`, `key`, `token`, admin bootstrap |
 | `api/v1alpha1` | `User` and `Workspace` CRDs (kubernetes is the only datastore) |
 | `internal/controllers` | User → namespace + ResourceQuota + NetworkPolicy; Workspace → Pod + PVC + ssh Secret |
 | `internal/sshgateway` | Public-key auth + namespace-scoped TCP routing |
@@ -153,8 +165,14 @@ Notes:
 
 M1 (walking skeleton) is complete: helm-installable control plane, admin
 bootstrap, user/workspace lifecycle, SSH gateway, persistence, dashboard and
-admin console. See the [plan](../../.opencode/plan/k8s-dev-ws-go-plan.md)
-for the M2/M3 roadmap (git provider integrations, quota UI, HA, metrics).
+admin console.
+
+M2 (IDE experience) is complete: workspace logs (live tail, per container)
+and events in the UI and CLI, git repository pre-clone with failure
+surfacing, connection cards with IDE guides, and a tested VS Code
+Remote-SSH / JetBrains Gateway setup ([docs/ide-setup.md](docs/ide-setup.md)).
+See the [plan](../../.opencode/plan/k8s-dev-ws-go-plan.md)
+for the M3 roadmap (quota UI, metrics, HA, CI).
 
 ## License
 
