@@ -44,6 +44,16 @@ export interface Workspace {
   createdAt: string
 }
 
+export interface WorkspaceEvent {
+  type: string
+  reason: string
+  object: string
+  message: string
+  count: number
+  firstSeen: string
+  lastSeen: string
+}
+
 export interface PlatformConfig {
   sshHost: string
   sshPort: number

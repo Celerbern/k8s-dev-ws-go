@@ -129,7 +129,9 @@ function phaseClass(phase: string) {
         <tbody>
           <tr v-for="ws in workspaces" :key="ws.namespace + '/' + ws.name">
             <td>{{ ws.user }}</td>
-            <td><strong>{{ ws.name }}</strong></td>
+            <td>
+              <router-link :to="`/workspace/${ws.name}?user=${ws.user}`"><strong>{{ ws.name }}</strong></router-link>
+            </td>
             <td class="muted">{{ ws.class }}</td>
             <td><span class="badge" :class="phaseClass(ws.phase)">{{ ws.phase }}</span></td>
             <td class="muted">{{ ws.message }}</td>

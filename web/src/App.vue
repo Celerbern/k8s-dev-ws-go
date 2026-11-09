@@ -25,7 +25,7 @@ async function logout() {
       </div>
     </header>
     <main class="content">
-      <router-view />
+      <router-view :key="$route.fullPath" />
     </main>
   </div>
   <router-view v-else />

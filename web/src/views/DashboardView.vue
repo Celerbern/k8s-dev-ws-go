@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api, ApiError } from '../api'
 import { auth, type PlatformConfig, type Workspace } from '../store'
+import ConnectionCard from '../components/ConnectionCard.vue'
 import CreateWorkspaceModal from '../components/CreateWorkspaceModal.vue'
 
 const workspaces = ref<Workspace[]>([])
@@ -61,31 +62,6 @@ function phaseClass(phase: string) {
     Failed: 'badge-failed',
   }[phase] ?? 'badge-stopped'
 }
-
-function sshConfigSnippet(ws: Workspace) {
-  const host = config.value?.sshHost ?? 'ssh.devws.local'
-  const port = config.value?.sshPort ?? 22
-  const user = auth.user?.username ?? 'user'
-  const gw = port === 22 ? `${user}@${host}` : `${user}@${host}:${port}`
-  return `# devws gateway (authenticates the ProxyJump below)
-Host ${host}
-  Port ${port}
-  User ${user}
-  IdentityFile ~/.ssh/id_ed25519
-
-Host devws-${ws.name}
-  HostName ${ws.sshHost}
-  Port 2222
-  User devws
-  ProxyJump ${gw}
-  ServerAliveInterval 30
-  StrictHostKeyChecking accept-new
-  IdentityFile ~/.ssh/id_ed25519`
-}
-
-async function copy(text: string) {
-  await navigator.clipboard.writeText(text)
-}
 </script>
 
 <template>
@@ -110,7 +86,9 @@ async function copy(text: string) {
       <div class="card" v-for="ws in workspaces" :key="ws.name">
         <div class="spread" style="margin-bottom: 0.5rem">
           <div class="row">
-            <strong style="font-size: 1.05rem">{{ ws.name }}</strong>
+            <router-link :to="`/workspace/${ws.name}`" style="font-size: 1.05rem; font-weight: 700">{{
+              ws.name
+            }}</router-link>
             <span class="badge" :class="phaseClass(ws.phase)">{{ ws.phase }}</span>
           </div>
           <span class="muted">{{ ws.class }}</span>
@@ -149,15 +127,7 @@ async function copy(text: string) {
         </div>
 
         <div v-if="expanded === ws.name" style="margin-top: 1rem">
-          <p class="muted" style="margin-top: 0">
-            Add this to <code>~/.ssh/config</code> (or run <code>devws ssh-config --write</code>),
-            then open VS Code → Remote-SSH → <code>devws-{{ ws.name }}</code
-            >, or JetBrains Gateway → SSH → <code>devws-{{ ws.name }}</code>.
-          </p>
-          <div class="copy-box">
-            <button class="btn btn-sm" @click="copy(sshConfigSnippet(ws))">Copy</button>
-            <pre>{{ sshConfigSnippet(ws) }}</pre>
-          </div>
+          <ConnectionCard :ws="ws" :config="config" :username="auth.user?.username ?? 'user'" />
         </div>
       </div>
     </div>
