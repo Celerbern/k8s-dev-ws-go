@@ -5,6 +5,9 @@ metadata:
   namespace: {{ include "devws.namespace" . }}
   labels:
     {{- include "devws.labels" . | nindent 4 }}
+    {{- if .Values.metrics.enabled }}
+    devws.io/metrics: "true"
+    {{- end }}
 spec:
   type: {{ .Values.service.web.type }}
   selector:
@@ -13,6 +16,11 @@ spec:
     - name: web
       port: {{ .Values.service.web.port }}
       targetPort: web
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+    {{- end }}
 ---
 apiVersion: v1
 kind: Service

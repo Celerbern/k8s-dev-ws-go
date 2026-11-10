@@ -85,7 +85,18 @@ serviceAccount:
   name: "" # defaults to devws-apiserver
 
 metrics:
+  # Serve prometheus metrics on --metrics-addr and expose the port on the
+  # devws-web service (http://<service>:<port>/metrics).
   enabled: false
   port: 8081
+  serviceMonitor:
+    # Also create a Prometheus Operator ServiceMonitor (requires the
+    # monitoring.coreos.com CRDs on the cluster).
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels to match your Prometheus' serviceMonitorSelector, e.g.
+    # release: prometheus.
+    labels: {}
 
 podAnnotations: {}

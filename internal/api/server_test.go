@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -16,6 +17,7 @@ import (
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
 	"github.com/celerbern/k8s-dev-ws-go/internal/auth"
 	"github.com/celerbern/k8s-dev-ws-go/internal/config"
+	devwsmetrics "github.com/celerbern/k8s-dev-ws-go/internal/metrics"
 )
 
 var testScheme = runtime.NewScheme()
@@ -219,5 +221,30 @@ func TestCannotDeleteSelf(t *testing.T) {
 	resp := doJSON(t, client, "DELETE", srv.URL+"/api/users/bob", nil, nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("self deletion must be rejected, got %d", resp.StatusCode)
+	}
+}
+
+func TestAPIRequestMetrics(t *testing.T) {
+	devwsmetrics.APIRequestsTotal.Reset()
+	srv := newTestServer(t, testUser("alice", "password123", "user"))
+	client := loginClient(t, srv, "alice", "password123")
+
+	resp, _ := doGet(t, client, srv.URL+"/api/auth/me")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("me: %d", resp.StatusCode)
+	}
+	// A request that matches no route pattern is counted as unmatched
+	// (unknown GET paths fall through to the SPA handler; a DELETE hits
+	// the method mismatch and is served 405 with an empty pattern).
+	resp = doJSON(t, client, "DELETE", srv.URL+"/api/definitely-not-a-route", nil, nil)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("unmatched route should 405, got %d", resp.StatusCode)
+	}
+
+	if v := testutil.ToFloat64(devwsmetrics.APIRequestsTotal.WithLabelValues("GET", "GET /api/auth/me", "200")); v != 1 {
+		t.Fatalf("GET /api/auth/me counted %v, want 1", v)
+	}
+	if v := testutil.ToFloat64(devwsmetrics.APIRequestsTotal.WithLabelValues("DELETE", "unmatched", "405")); v != 1 {
+		t.Fatalf("unmatched route counted %v, want 1", v)
 	}
 }

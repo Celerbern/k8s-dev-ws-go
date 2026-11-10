@@ -15,16 +15,19 @@ cd "$ROOT"
 KIND_NAME="${KIND_NAME:-devws}"
 RELEASE_NS="devws-system"
 API="http://127.0.0.1:18080"
+METRICS="http://127.0.0.1:18081"
 SSH_PORT="${SSH_PORT:-2222}"
 ADMIN_PASSWORD="devws-e2e-password"
 USER_PASSWORD="devws-user-password"
 WORKSPACE="e2e-ws"
 SSH_KEY_DIR="$(mktemp -d)"
 PF_PID=""
+PF2_PID=""
 
 cleanup() {
   local keep="${1:-}"
   kill "$PF_PID" 2>/dev/null || true
+  kill "$PF2_PID" 2>/dev/null || true
   echo
   echo "=== e2e logs (devws apiserver) ==="
   kubectl -n "$RELEASE_NS" logs deploy/devws-apiserver --tail=80 || true
@@ -90,6 +93,7 @@ helm upgrade --install devws charts/devws \
   --set "config.sshHost=127.0.0.1:${SSH_PORT}" \
   --set service.ssh.type=NodePort \
   --set service.ssh.nodePort=30022 \
+  --set metrics.enabled=true \
   --set admin.password="$ADMIN_PASSWORD"
 
 step "Waiting for the apiserver"
@@ -226,6 +230,30 @@ echo "ok"
 step "Workspace events API"
 EVENTS=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$WORKSPACE/events")
 echo "$EVENTS" | grep -q '"WorkspaceStarting"' || { echo "FAILED: no WorkspaceStarting event: $EVENTS"; exit 1; }
+echo "ok"
+
+step "Prometheus metrics endpoint"
+kubectl -n "$RELEASE_NS" port-forward svc/devws-web 18081:8081 >/dev/null 2>&1 &
+PF2_PID=$!
+for _ in $(seq 1 30); do
+  if curl -fsS "$METRICS/metrics" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+METRICS_BODY=$(curl -fsS "$METRICS/metrics") || { echo "FAILED: metrics endpoint did not come up"; exit 1; }
+echo "$METRICS_BODY" | grep -q '^devws_workspaces_by_phase{phase="Running"} 1$' || {
+  echo "FAILED: devws_workspaces_by_phase does not show 1 Running workspace"; exit 1
+}
+echo "$METRICS_BODY" | grep -q '^devws_users{state="active"} 2$' || {
+  echo "FAILED: devws_users does not show 2 active users"; exit 1
+}
+echo "$METRICS_BODY" | grep -q 'devws_api_requests_total{code="200",method="GET",route="GET /api/workspaces/{name}"}' || {
+  echo "FAILED: devws_api_requests_total does not count workspace GETs"; exit 1
+}
+echo "$METRICS_BODY" | grep -q '^devws_gateway_connections_total ' || {
+  echo "FAILED: gateway connection counter missing"; exit 1
+}
+kill "$PF2_PID" 2>/dev/null || true
+PF2_PID=""
 echo "ok"
 
 step "gitRepos pre-clone (public repo)"

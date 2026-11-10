@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
 	"github.com/celerbern/k8s-dev-ws-go/internal/auth"
 	"github.com/celerbern/k8s-dev-ws-go/internal/config"
+	devwsmetrics "github.com/celerbern/k8s-dev-ws-go/internal/metrics"
 	"github.com/celerbern/k8s-dev-ws-go/internal/web"
 )
 
@@ -105,7 +107,40 @@ func (s *Server) routes() {
 func (s *Server) NeedLeaderElection() bool { return false }
 
 // Handler returns the HTTP handler (for tests and custom servers).
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return s.withRequestMetrics(s.mux) }
+
+// statusRecorder captures the response status code for metrics.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// Flush keeps streaming responses (log tails) flushing through the wrapper.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// withRequestMetrics counts requests by method, route pattern and status.
+// The route pattern is set by the ServeMux during routing (Go 1.23+);
+// requests that match no route are counted as "unmatched".
+func (s *Server) withRequestMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		route := r.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
+		devwsmetrics.APIRequestsTotal.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
+	})
+}
 
 // Start runs the HTTP server until the context is cancelled.
 func (s *Server) Start(ctx context.Context) error {
@@ -114,7 +149,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.httpServer = &http.Server{
-		Handler:           s.mux,
+		Handler:           s.Handler(), // mux wrapped with request metrics
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

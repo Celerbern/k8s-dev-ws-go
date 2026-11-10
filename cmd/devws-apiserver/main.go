@@ -25,6 +25,7 @@ import (
 	"github.com/celerbern/k8s-dev-ws-go/internal/auth"
 	"github.com/celerbern/k8s-dev-ws-go/internal/config"
 	"github.com/celerbern/k8s-dev-ws-go/internal/controllers"
+	devwsmetrics "github.com/celerbern/k8s-dev-ws-go/internal/metrics"
 	"github.com/celerbern/k8s-dev-ws-go/internal/sshgateway"
 )
 
@@ -89,6 +90,10 @@ func main() {
 		logger.Error(err, "cannot create manager")
 		os.Exit(1)
 	}
+
+	// Custom devws metrics (workspace/user gauges, gateway connections, API
+	// requests) on the controller-runtime registry served by --metrics-addr.
+	devwsmetrics.Register(mgr.GetClient())
 
 	// A direct (uncached) client for bootstrap reads/writes that must work
 	// before the caches start.

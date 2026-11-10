@@ -1,0 +1,25 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+# Prometheus Operator scrape configuration for the apiserver metrics port.
+# Requires the prometheus-operator CRDs (ServiceMonitor) to be installed;
+# scrape without them by pointing Prometheus at the devws-web service's
+# metrics port instead.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "devws.name" . }}
+  namespace: {{ include "devws.namespace" . }}
+  labels:
+    {{- include "devws.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "devws.selectorLabels" . | nindent 6 }}
+      devws.io/metrics: "true"
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}

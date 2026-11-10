@@ -28,6 +28,7 @@ import (
 
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
 	"github.com/celerbern/k8s-dev-ws-go/internal/controllers"
+	devwsmetrics "github.com/celerbern/k8s-dev-ws-go/internal/metrics"
 )
 
 // HostKeySecretName is the Secret holding the gateway's SSH host key.
@@ -105,6 +106,10 @@ func (g *Gateway) handleConn(ctx context.Context, conn net.Conn) {
 	if err != nil {
 		return
 	}
+	// Count established SSH sessions (failed handshakes are not counted).
+	devwsmetrics.GatewayConnectionsTotal.Inc()
+	devwsmetrics.GatewayConnectionsActive.Inc()
+	defer devwsmetrics.GatewayConnectionsActive.Dec()
 	defer sconn.Close()
 	_ = conn.SetDeadline(time.Time{})
 	go ssh.DiscardRequests(reqs)
