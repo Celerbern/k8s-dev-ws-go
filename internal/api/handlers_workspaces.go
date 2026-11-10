@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
-	"github.com/celerbern/k8s-dev-ws-go/internal/config"
 	"github.com/celerbern/k8s-dev-ws-go/internal/controllers"
 )
 
@@ -147,10 +146,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	quotas := user.Spec.Quotas
-	if quotas.MaxWorkspaces == 0 && quotas.CPU.IsZero() && quotas.Memory.IsZero() && quotas.Storage.IsZero() {
-		quotas = config.DefaultUserQuotas()
-	}
+	quotas := effectiveUserQuotas(user.Spec.Quotas)
 	var list devwsv1alpha1.WorkspaceList
 	if err := s.client.List(ctx, &list, client.InNamespace(ns)); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -314,61 +310,4 @@ func (s *Server) handleStopWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // ------------------------------------------------------------------ admin --
-
-func (s *Server) handleAdminUsage(w http.ResponseWriter, r *http.Request) {
-	var users devwsv1alpha1.UserList
-	var workspaces devwsv1alpha1.WorkspaceList
-	ctx := r.Context()
-	if err := s.client.List(ctx, &users); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := s.client.List(ctx, &workspaces); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	perUser := map[string]*struct {
-		Workspaces int    `json:"workspaces"`
-		Storage    string `json:"storage"`
-		storage    resource.Quantity
-	}{}
-	running := 0
-	for i := range workspaces.Items {
-		ws := &workspaces.Items[i]
-		user := ws.Spec.UserRef
-		entry, ok := perUser[user]
-		if !ok {
-			entry = &struct {
-				Workspaces int    `json:"workspaces"`
-				Storage    string `json:"storage"`
-				storage    resource.Quantity
-			}{}
-			perUser[user] = entry
-		}
-		entry.Workspaces++
-		q := ws.Spec.Storage
-		if q.IsZero() {
-			if cs, ok := s.cfg.Class(ws.Spec.Class); ok {
-				q = resource.MustParse(cs.Storage)
-			}
-		}
-		entry.storage.Add(q)
-		if ws.Status.Phase == devwsv1alpha1.WorkspacePhaseRunning {
-			running++
-		}
-	}
-	type row struct {
-		Workspaces int    `json:"workspaces"`
-		Storage    string `json:"storage"`
-	}
-	rows := map[string]row{}
-	for u, e := range perUser {
-		rows[u] = row{Workspaces: e.Workspaces, Storage: e.storage.String()}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"users":      len(users.Items),
-		"workspaces": len(workspaces.Items),
-		"running":    running,
-		"perUser":    rows,
-	})
-}
+// (admin usage and audit endpoints live in handlers_admin.go)

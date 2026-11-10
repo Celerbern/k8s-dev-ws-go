@@ -145,6 +145,41 @@ async function copy(text: string) {
 
       <div>
         <div class="card" style="margin-bottom: 1rem">
+          <h2>Quotas</h2>
+          <p class="muted" style="margin-top: 0">
+            CPU and memory reflect workspaces with a live pod; storage counts all your
+            workspaces (home volumes persist while stopped).
+          </p>
+          <table>
+            <thead>
+              <tr><th>Resource</th><th>Usage</th><th>Quota</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Workspaces</td>
+                <td>{{ me.usage?.workspaces ?? 0 }} ({{ me.usage?.running ?? 0 }} running)</td>
+                <td>{{ me.quotas.maxWorkspaces || '∞' }}</td>
+              </tr>
+              <tr>
+                <td>CPU</td>
+                <td>{{ me.usage?.cpu || '0' }}</td>
+                <td>{{ me.quotas.cpu || '—' }}</td>
+              </tr>
+              <tr>
+                <td>Memory</td>
+                <td>{{ me.usage?.memory || '0' }}</td>
+                <td>{{ me.quotas.memory || '—' }}</td>
+              </tr>
+              <tr>
+                <td>Storage</td>
+                <td>{{ me.usage?.storage || '0' }}</td>
+                <td>{{ me.quotas.storage || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card" style="margin-bottom: 1rem">
           <h2>API tokens</h2>
           <p class="muted" style="margin-top: 0">
             Used by the <code>devws</code> CLI (<code>devws login &lt;server&gt;</code>).

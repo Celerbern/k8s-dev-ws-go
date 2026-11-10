@@ -186,6 +186,27 @@ tr:hover td {
   color: var(--red);
 }
 
+/* utilization meters */
+.meter {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-2);
+  margin-top: 5px;
+  overflow: hidden;
+}
+.meter > div {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+.meter > div.warn {
+  background: var(--yellow);
+}
+.meter > div.full {
+  background: var(--red);
+}
+
 /* cards */
 .card {
   background: var(--panel);

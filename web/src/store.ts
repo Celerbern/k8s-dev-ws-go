@@ -14,6 +14,14 @@ export interface Token {
   expiresAt?: string
 }
 
+export interface Usage {
+  workspaces: number
+  running: number
+  cpu: string
+  memory: string
+  storage: string
+}
+
 export interface User {
   username: string
   email: string
@@ -23,6 +31,7 @@ export interface User {
   namespace: string
   createdAt: string
   quotas: { maxWorkspaces: number; cpu: string; memory: string; storage: string }
+  usage?: Usage
   sshPublicKeys?: SSHKey[]
   apiTokens?: Token[]
   workspaceCount?: number

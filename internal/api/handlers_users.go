@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 	"strings"
@@ -47,6 +48,7 @@ type userView struct {
 	SSHPublicKeys  []publicKeyView `json:"sshPublicKeys"`
 	APITokens      []tokenView     `json:"apiTokens"`
 	Quotas         quotasView      `json:"quotas"`
+	Usage          *usageView      `json:"usage,omitempty"`
 	WorkspaceCount int             `json:"workspaceCount"`
 }
 
@@ -55,6 +57,64 @@ type tokenView struct {
 	CreatedAt  string `json:"createdAt,omitempty"`
 	ExpiresAt  string `json:"expiresAt,omitempty"`
 	LastUsedAt string `json:"lastUsedAt,omitempty"`
+}
+
+// usageView is a user's current workspace footprint (computed from the
+// workspace list; see userUsage).
+type usageView struct {
+	Workspaces int    `json:"workspaces"`
+	Running    int    `json:"running"`
+	CPU        string `json:"cpu"`
+	Memory     string `json:"memory"`
+	Storage    string `json:"storage"`
+}
+
+// effectiveUserQuotas returns the quotas that apply to a user: their spec,
+// or the platform defaults when none of the quota fields are set.
+func effectiveUserQuotas(q devwsv1alpha1.UserQuotas) devwsv1alpha1.UserQuotas {
+	if q.MaxWorkspaces == 0 && q.CPU.IsZero() && q.Memory.IsZero() && q.Storage.IsZero() {
+		return config.DefaultUserQuotas()
+	}
+	return q
+}
+
+// userUsage computes a user's workspace footprint. CPU and memory count
+// workspaces that hold a live pod (phase Running or Provisioning);
+// storage counts every workspace, because home PVCs persist while a
+// workspace is stopped.
+func (s *Server) userUsage(ctx context.Context, username string) (*usageView, error) {
+	var list devwsv1alpha1.WorkspaceList
+	ns := controllers.NamespaceFor(username)
+	if err := s.client.List(ctx, &list, client.InNamespace(ns)); err != nil {
+		return nil, err
+	}
+	usage := &usageView{}
+	var cpu, memory, storage resource.Quantity
+	for i := range list.Items {
+		ws := &list.Items[i]
+		usage.Workspaces++
+		live := ws.Status.Phase == devwsv1alpha1.WorkspacePhaseRunning ||
+			ws.Status.Phase == devwsv1alpha1.WorkspacePhaseProvisioning
+		if ws.Status.Phase == devwsv1alpha1.WorkspacePhaseRunning {
+			usage.Running++
+		}
+		class, ok := s.cfg.Class(ws.Spec.Class)
+		if ok {
+			if live {
+				cpu.Add(resource.MustParse(class.CPU))
+				memory.Add(resource.MustParse(class.Memory))
+			}
+		}
+		q := ws.Spec.Storage
+		if q.IsZero() && ok {
+			q = resource.MustParse(class.Storage)
+		}
+		storage.Add(q)
+	}
+	usage.CPU = cpu.String()
+	usage.Memory = memory.String()
+	usage.Storage = storage.String()
+	return usage, nil
 }
 
 func publicUser(u *devwsv1alpha1.User, workspaceCount int) *userView {
@@ -92,10 +152,7 @@ func publicUser(u *devwsv1alpha1.User, workspaceCount int) *userView {
 		}
 		v.APITokens = append(v.APITokens, tv)
 	}
-	quotas := u.Spec.Quotas
-	if quotas.MaxWorkspaces == 0 && quotas.CPU.IsZero() && quotas.Memory.IsZero() && quotas.Storage.IsZero() {
-		quotas = config.DefaultUserQuotas()
-	}
+	quotas := effectiveUserQuotas(u.Spec.Quotas)
 	v.Quotas.MaxWorkspaces = quotas.MaxWorkspaces
 	if !quotas.CPU.IsZero() {
 		v.Quotas.CPU = quotas.CPU.String()
@@ -233,12 +290,14 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	counts := map[string]int{}
-	var list devwsv1alpha1.WorkspaceList
-	if err := s.client.List(r.Context(), &list, client.InNamespace(controllers.NamespaceFor(user.Name))); err == nil {
-		counts[controllers.NamespaceFor(user.Name)] = len(list.Items)
+	usage, err := s.userUsage(r.Context(), user.Name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	writeJSON(w, http.StatusOK, publicUser(user, counts[controllers.NamespaceFor(user.Name)]))
+	v := publicUser(user, usage.Workspaces)
+	v.Usage = usage
+	writeJSON(w, http.StatusOK, v)
 }
 
 func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {

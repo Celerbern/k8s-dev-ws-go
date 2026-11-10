@@ -214,8 +214,23 @@ FOUND=$(ssh -F "$SSH_KEY_DIR/ssh_config" devws-$WORKSPACE "cat /home/devws/marke
 [[ "$FOUND" == "$MARKER" ]] || { echo "FAILED: marker file lost: '$FOUND' != '$MARKER'"; exit 1; }
 echo "data persisted across stop/start ✓"
 
-step "Admin usage endpoint"
-curl -fsS -b "$SSH_KEY_DIR/cookies" "$API/api/admin/usage" | grep -q '"workspaces":1'
+step "Admin usage endpoint (usage vs quotas)"
+USAGE=$(curl -fsS -b "$SSH_KEY_DIR/cookies" "$API/api/admin/usage")
+echo "$USAGE" | grep -q '"workspaces":1' || { echo "FAILED: usage totals: $USAGE"; exit 1; }
+echo "$USAGE" | grep -q '"username":"e2e"' || { echo "FAILED: no per-user row for e2e: $USAGE"; exit 1; }
+# Defaults: maxWorkspaces 5, cpu 8, memory 16Gi, storage 100Gi.
+echo "$USAGE" | grep -q '"maxWorkspaces":5,"running":1,"cpu":"250m"' || { echo "FAILED: usage row wrong: $USAGE"; exit 1; }
+echo "$USAGE" | grep -q '"cpuQuota":"8"' || { echo "FAILED: cpu quota missing: $USAGE"; exit 1; }
+echo "$USAGE" | grep -q '"memoryQuota":"16Gi"' || { echo "FAILED: memory quota missing: $USAGE"; exit 1; }
+echo "$USAGE" | grep -q '"storageQuota":"100Gi"' || { echo "FAILED: storage quota missing: $USAGE"; exit 1; }
+# Tiny workspace: 250m cpu, 512Mi memory, 5Gi storage.
+echo "$USAGE" | grep -q '"cpu":"250m"' || { echo "FAILED: cpu usage wrong: $USAGE"; exit 1; }
+echo "$USAGE" | grep -q '"memory":"512Mi"' || { echo "FAILED: memory usage wrong: $USAGE"; exit 1; }
+echo "$USAGE" | grep -q '"storage":"5Gi"' || { echo "FAILED: storage usage wrong: $USAGE"; exit 1; }
+# Own user view includes usage for the quota card.
+curl -fsS -H "$AUTH" "$API/api/users/e2e" | grep -q '"usage":{"workspaces":1,"running":1,"cpu":"250m","memory":"512Mi","storage":"5Gi"}' || {
+  echo "FAILED: own usage missing from user view"; exit 1
+}
 echo "ok"
 
 step "Workspace logs API"

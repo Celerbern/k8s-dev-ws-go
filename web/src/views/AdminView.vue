@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { api, ApiError } from '../api'
 import type { User, Workspace } from '../store'
+import { qtyPct, numPct, meterClass } from '../quantity'
 import CreateUserModal from '../components/CreateUserModal.vue'
 import EditUserModal from '../components/EditUserModal.vue'
 import ResetPasswordModal from '../components/ResetPasswordModal.vue'
@@ -155,12 +156,60 @@ function phaseClass(phase: string) {
           <div class="muted">running</div>
         </div>
       </div>
-      <h2 style="margin-top: 1.5rem">Per user</h2>
+      <div class="spread" style="margin-top: 1.5rem; margin-bottom: 0">
+        <h2 style="margin: 0">Per user</h2>
+        <button class="btn btn-sm" @click="refreshAll">Refresh</button>
+      </div>
+      <p class="muted">
+        CPU and memory reflect workspaces with a live pod; storage counts all workspaces
+        (home volumes persist while stopped).
+      </p>
       <table>
-        <thead><tr><th>User</th><th>Workspaces</th><th>Storage</th></tr></thead>
+        <thead>
+          <tr>
+            <th>User</th><th>Workspaces</th><th>Running</th><th>CPU</th><th>Memory</th><th>Storage</th>
+          </tr>
+        </thead>
         <tbody>
-          <tr v-for="(row, user) in usage.perUser" :key="user">
-            <td>{{ user }}</td><td>{{ row.workspaces }}</td><td class="muted">{{ row.storage }}</td>
+          <tr v-for="row in usage.perUser" :key="row.username">
+            <td><strong>{{ row.username }}</strong></td>
+            <td>
+              <div>{{ row.workspaces }} / {{ row.maxWorkspaces || '∞' }}</div>
+              <div class="meter" v-if="numPct(row.workspaces, row.maxWorkspaces) !== null">
+                <div
+                  :class="meterClass(numPct(row.workspaces, row.maxWorkspaces))"
+                  :style="{ width: (numPct(row.workspaces, row.maxWorkspaces) ?? 0) + '%' }"
+                ></div>
+              </div>
+            </td>
+            <td>{{ row.running }}</td>
+            <td>
+              <div>{{ row.cpu || '0' }} / {{ row.cpuQuota || '—' }}</div>
+              <div class="meter" v-if="qtyPct(row.cpu, row.cpuQuota) !== null">
+                <div
+                  :class="meterClass(qtyPct(row.cpu, row.cpuQuota))"
+                  :style="{ width: (qtyPct(row.cpu, row.cpuQuota) ?? 0) + '%' }"
+                ></div>
+              </div>
+            </td>
+            <td>
+              <div>{{ row.memory || '0' }} / {{ row.memoryQuota || '—' }}</div>
+              <div class="meter" v-if="qtyPct(row.memory, row.memoryQuota) !== null">
+                <div
+                  :class="meterClass(qtyPct(row.memory, row.memoryQuota))"
+                  :style="{ width: (qtyPct(row.memory, row.memoryQuota) ?? 0) + '%' }"
+                ></div>
+              </div>
+            </td>
+            <td>
+              <div>{{ row.storage || '0' }} / {{ row.storageQuota || '—' }}</div>
+              <div class="meter" v-if="qtyPct(row.storage, row.storageQuota) !== null">
+                <div
+                  :class="meterClass(qtyPct(row.storage, row.storageQuota))"
+                  :style="{ width: (qtyPct(row.storage, row.storageQuota) ?? 0) + '%' }"
+                ></div>
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>
