@@ -1,0 +1,29 @@
+# Values used by chart-testing in CI (ct lint + ct install, see
+# hack/ct.yaml and .github/workflows). Mirrors the e2e setup in
+# hack/e2e-kind.sh: the devws-apiserver:dev / devws-workspace:dev images
+# are built and loaded into the kind cluster before ct runs, so pulling
+# from a registry must never happen.
+image:
+  repository: devws-apiserver
+  tag: dev
+  pullPolicy: Never
+
+workspaceImage: devws-workspace:dev
+
+# Exercise the bootstrap admin job as part of the install.
+admin:
+  password: devws-ci-password
+
+# kind maps host port 2222 -> node port 30022 (hack/kind-config.yaml).
+service:
+  ssh:
+    type: NodePort
+    nodePort: 30022
+
+config:
+  sshHost: 127.0.0.1:2222
+
+# Expose the metrics port on the service. The ServiceMonitor stays off:
+# kind does not ship the monitoring.coreos.com CRDs.
+metrics:
+  enabled: true

@@ -1,0 +1,11 @@
+# chart-testing (ct) configuration used by CI (.github/workflows).
+#
+#   ct lint   --all --config hack/ct.yaml
+#   ct install --all --config hack/ct.yaml
+#
+# --all processes every chart (there is one) and disables the changed-chart
+# detection that needs a git remote comparison.
+chart-dirs:
+  - charts
+# The maintainer "devws" is a project identity, not a GitHub account.
+validate-maintainers: false

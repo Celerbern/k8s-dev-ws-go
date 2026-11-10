@@ -1,0 +1,71 @@
+# Unit tests, gofmt/vet, web build, and helm chart linting.
+#
+# The end-to-end and chart-install jobs live in e2e.yml; this workflow
+# stays fast (no docker builds, no cluster) so it can gate every PR.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt is needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI
+        run: make build-web
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      # ct lint shells out to yamllint, which is not on the runner image.
+      - name: Install yamllint
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends yamllint
+
+      - name: helm lint
+        run: helm lint charts/devws
+
+      - uses: helm/chart-testing-action@v2
+
+      # --all: lint every chart regardless of git changes (the repo may
+      # not have a remote to diff against); hack/ct.yaml points ct at
+      # charts/ and skips maintainer validation.
+      - name: ct lint
+        run: ct lint --all --config hack/ct.yaml

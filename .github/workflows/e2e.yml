@@ -1,0 +1,70 @@
+# End-to-end tests on ephemeral kind clusters.
+#
+#   e2e          hack/e2e-kind.sh — the full user journey: helm install,
+#                admin bootstrap, user + workspace, SSH through the
+#                gateway, persistence, metrics, HA failover, git clone.
+#                The script is self-contained (it builds its own images
+#                via docker), so this job only provides a kind cluster.
+#
+#   chart-install  chart-testing (ct install) with charts/devws/ci/
+#                kind-values.yaml — proves the chart installs cleanly
+#                from a plain `helm install` path (not just the e2e
+#                script's --set flags) and reaches a ready state.
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # e2e-kind.sh reuses an existing "devws" cluster if there is one,
+      # so pre-creating it here also installs kind + kubectl and wires
+      # up the host port mapping from hack/kind-config.yaml.
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: devws
+          config: hack/kind-config.yaml
+
+      - name: Run e2e suite
+        run: ./hack/e2e-kind.sh
+
+  chart-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: chart-testing
+          config: hack/kind-config.yaml
+
+      - name: Build images
+        run: make docker-apiserver docker-workspace
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image devws-apiserver:dev --name chart-testing
+          kind load docker-image devws-workspace:dev --name chart-testing
+
+      - uses: helm/chart-testing-action@v2
+
+      # ct picks up charts/devws/ci/kind-values.yaml automatically and
+      # installs the release into its own namespace; --wait makes helm
+      # block until the deployment and the bootstrap job are ready.
+      - name: ct install
+        run: ct install --all --config hack/ct.yaml --helm-extra-args "--wait"

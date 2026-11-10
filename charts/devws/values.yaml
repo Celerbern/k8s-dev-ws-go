@@ -3,7 +3,7 @@
 # Control plane image (API server + controllers + SSH gateway + devws CLI).
 image:
   repository: ghcr.io/celerbern/devws-apiserver
-  tag: "" # defaults to .Chart.AppVersion
+  tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -15,7 +15,7 @@ workspaceImage: ghcr.io/celerbern/devws-workspace:0.1.0
 # by the job; leave empty to skip bootstrap (manage User CRs yourself).
 admin:
   username: admin
-  password: "" # e.g. --set admin.password=$(openssl rand -base64 18)
+  password: ""  # e.g. --set admin.password=$(openssl rand -base64 18)
 
 # Platform configuration rendered into the devws-config ConfigMap.
 config:
@@ -52,7 +52,7 @@ service:
     # your ingress controller.
     type: LoadBalancer
     port: 22
-    nodePort: "" # e.g. 30022 when type is NodePort
+    nodePort: ""  # e.g. 30022 when type is NodePort
 
 ingress:
   enabled: false
@@ -86,7 +86,7 @@ leaderElection: true
 
 serviceAccount:
   create: true
-  name: "" # defaults to devws-apiserver
+  name: ""  # defaults to devws-apiserver
 
 metrics:
   # Serve prometheus metrics on --metrics-addr and expose the port on the
