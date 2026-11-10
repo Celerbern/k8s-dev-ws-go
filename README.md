@@ -9,7 +9,8 @@ devws lets users develop applications **inside a Kubernetes cluster**:
   **JetBrains Gateway** through an SSH gateway. No IDE plugins required.
 - **Git support** — git + ssh toolchains in every workspace, keys and
   credentials persist on the workspace volume, optional repo pre-clone.
-- **Admin console** — web UI for managing users, quotas and workspaces.
+- **Admin console** — web UI for managing users, quotas and workspaces,
+  live usage vs quotas, and a cross-namespace audit log.
 - **Fully kubernetes-native** — users and workspaces are custom resources
   (CRDs); there is **no database** to operate. Install with Helm.
 
@@ -142,12 +143,40 @@ restart the workspace to apply them immediately.
 Workspace classes (CPU/RAM/disk templates), the default workspace image,
 storage class and per-user quotas are Helm values rendered into a ConfigMap.
 
+## Operations
+
+**Metrics** — the apiserver serves prometheus metrics on
+`--metrics-addr` (`metrics.enabled=true` in values, port 8081): request
+counters (`devws_api_requests_total{method,route,code}`), gateway
+connection gauges, and per-phase workspace/user counts from the
+controllers' caches. With the prometheus operator installed, set
+`metrics.serviceMonitor.enabled=true` to get a ServiceMonitor scraping
+the `devws.io/metrics: "true"` labeled service.
+
+**High availability** — the web API and SSH gateway are stateless and
+serve from every replica; the controllers elect a leader via a Lease in
+the release namespace. Scale with `replicaCount` (leader election is on
+by default, `leaderElection=false` for single-replica setups without
+Lease permissions). Deleting the leader pod fails the lease over within
+seconds and the API keeps serving throughout.
+
+**Usage & audit** — the admin console's *Usage* tab shows per-user
+workspace/CPU/memory/storage consumption against quotas (with meter
+bars); users see their own consumption on their profile page. The
+*Audit log* tab lists recent kubernetes events across all user
+namespaces, attributed to users — workspace lifecycle, scheduling and
+quota denials, pod restarts.
+
+A security review of the design (trust model, workspace pod security
+context, PSA decision record, RBAC power) lives in
+[docs/security.md](docs/security.md).
+
 ## Development
 
 ```bash
 make build      # build web + both binaries into bin/
 make generate   # regenerate deepcopy + CRDs after editing api/
-make test       # unit tests (controllers, api, auth, ssh gateway)
+make test       # unit tests (controllers, api, auth, ssh gateway, metrics)
 make vet fmt
 make kind-e2e   # full end-to-end run on kind
 ```
@@ -161,6 +190,14 @@ Notes:
 - On clusters without a LoadBalancer expose SSH via `NodePort` (see values)
   or tunnel port 22 through your ingress controller.
 
+**CI** (`.github/workflows/`) runs on every push and PR:
+
+- `ci.yml` — gofmt/vet, unit tests, web build, `helm lint` +
+  `ct lint` (chart-testing, config in `hack/ct.yaml`).
+- `e2e.yml` — the full [kind e2e suite](#quickstart-on-kind)
+  (`hack/e2e-kind.sh`) plus a `ct install` of the chart with
+  `charts/devws/ci/kind-values.yaml` into a fresh kind cluster.
+
 ## Status
 
 M1 (walking skeleton) is complete: helm-installable control plane, admin
@@ -171,8 +208,13 @@ M2 (IDE experience) is complete: workspace logs (live tail, per container)
 and events in the UI and CLI, git repository pre-clone with failure
 surfacing, connection cards with IDE guides, and a tested VS Code
 Remote-SSH / JetBrains Gateway setup ([docs/ide-setup.md](docs/ide-setup.md)).
-See the [plan](../../.opencode/plan/k8s-dev-ws-go-plan.md)
-for the M3 roadmap (quota UI, metrics, HA, CI).
+
+M3 (hardening & ops) is complete: prometheus metrics (+ optional
+ServiceMonitor), leader election and multi-replica failover, quota usage
+views (admin + profile), a cross-namespace audit log, pod security
+admission labels with a documented decision record
+([docs/security.md](docs/security.md)), and CI (unit, chart lint/install,
+full kind e2e).
 
 ## License
 
