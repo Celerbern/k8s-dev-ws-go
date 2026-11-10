@@ -256,6 +256,50 @@ kill "$PF2_PID" 2>/dev/null || true
 PF2_PID=""
 echo "ok"
 
+step "Leader election: two replicas, failover, API keeps serving"
+kubectl -n "$RELEASE_NS" scale deploy/devws-apiserver --replicas=2
+kubectl -n "$RELEASE_NS" rollout status deploy/devws-apiserver --timeout=180s
+HOLDER=$(kubectl -n "$RELEASE_NS" get lease devws-apiserver-leader -o jsonpath='{.spec.holderIdentity}')
+OLD_LEADER="${HOLDER%%_*}"
+echo "lease holder: $HOLDER"
+# The holder must be one of the running apiserver pods.
+PODS=$(kubectl -n "$RELEASE_NS" get pods -l app.kubernetes.io/name=devws -o jsonpath='{range .items[*]}{.metadata.name} {end}')
+HOLDER_IS_POD=0
+for p in $PODS; do
+  [[ "$HOLDER" == "${p}_"* ]] && HOLDER_IS_POD=1
+done
+[[ "$HOLDER_IS_POD" == 1 ]] || { echo "FAILED: lease holder is not a running pod (holder: $HOLDER, pods: $PODS)"; exit 1; }
+# Kill the leader pod: another replica must take over the lease.
+kubectl -n "$RELEASE_NS" delete pod "$OLD_LEADER" >/dev/null
+for _ in $(seq 1 45); do
+  NEW_HOLDER=$(kubectl -n "$RELEASE_NS" get lease devws-apiserver-leader -o jsonpath='{.spec.holderIdentity}')
+  if [[ "$NEW_HOLDER" != "$HOLDER" ]]; then
+    LIVE_PODS=$(kubectl -n "$RELEASE_NS" get pods -l app.kubernetes.io/name=devws -o jsonpath='{range .items[*]}{.metadata.name} {end}')
+    for p in $LIVE_PODS; do
+      [[ "$NEW_HOLDER" == "${p}_"* ]] && break 2
+    done
+  fi
+  sleep 2
+done
+NEW_HOLDER=$(kubectl -n "$RELEASE_NS" get lease devws-apiserver-leader -o jsonpath='{.spec.holderIdentity}')
+LIVE_PODS=$(kubectl -n "$RELEASE_NS" get pods -l app.kubernetes.io/name=devws -o jsonpath='{range .items[*]}{.metadata.name} {end}')
+TAKEOVER=0
+for p in $LIVE_PODS; do
+  [[ "$NEW_HOLDER" == "${p}_"* ]] && TAKEOVER=1
+done
+[[ "$TAKEOVER" == 1 ]] || { echo "FAILED: no live pod took over the lease (holder: $NEW_HOLDER, pods: $LIVE_PODS)"; exit 1; }
+echo "lease failed over to $NEW_HOLDER"
+# The web API kept serving; re-establish the port-forward in case it was
+# bound to the deleted pod.
+kill "$PF_PID" 2>/dev/null || true
+port_forward
+PHASE=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$WORKSPACE" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
+[[ "$PHASE" == "Running" ]] || { echo "FAILED: workspace not queryable after failover (phase: $PHASE)"; exit 1; }
+# Back to a single replica for the rest of the run.
+kubectl -n "$RELEASE_NS" scale deploy/devws-apiserver --replicas=1
+kubectl -n "$RELEASE_NS" rollout status deploy/devws-apiserver --timeout=180s
+echo "ok"
+
 step "gitRepos pre-clone (public repo)"
 GIT_WS="e2e-git"
 GIT_REPO="https://github.com/octocat/Hello-World.git"

@@ -43,6 +43,7 @@ func main() {
 		sshAddr           string
 		metricsAddr       string
 		platformNamespace string
+		leaderElect       bool
 	)
 	// NOTE: --kubeconfig is registered by controller-runtime's pkg/client/config
 	// init() and honored by ctrl.GetConfigOrDie() below (along with KUBECONFIG
@@ -51,6 +52,8 @@ func main() {
 	flag.StringVar(&sshAddr, "ssh-addr", ":2222", "listen address for the SSH gateway")
 	flag.StringVar(&metricsAddr, "metrics-addr", "", "listen address for prometheus metrics (disabled by default)")
 	flag.StringVar(&platformNamespace, "platform-namespace", "devws-system", "namespace the control plane runs in")
+	flag.BoolVar(&leaderElect, "leader-elect", true,
+		"elect a leader replica that runs the controllers; the web API and SSH gateway serve from every replica either way")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -75,6 +78,13 @@ func main() {
 		metricsBind = "0"
 	}
 
+	// Leader election gates only the controllers (runnables that do not
+	// implement NeedLeaderElection()==false — the web API and the SSH
+	// gateway always run on every replica; sessions are stateless signed
+	// cookies). The Lease lives in the platform namespace; RBAC for it is
+	// granted by the helm chart.
+	//
+	// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;create;update
 	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
 		Scheme: scheme,
 		Cache: cache.Options{
@@ -85,6 +95,9 @@ func main() {
 		Metrics: metricsserver.Options{
 			BindAddress: metricsBind,
 		},
+		LeaderElection:          leaderElect,
+		LeaderElectionID:        "devws-apiserver-leader",
+		LeaderElectionNamespace: platformNamespace,
 	})
 	if err != nil {
 		logger.Error(err, "cannot create manager")

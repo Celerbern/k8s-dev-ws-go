@@ -33,6 +33,7 @@ spec:
             - --web-addr=:8080
             - --ssh-addr=:2222
             - --platform-namespace={{ include "devws.namespace" . }}
+            - --leader-elect={{ .Values.leaderElection }}
             {{- if .Values.metrics.enabled }}
             - --metrics-addr=:{{ .Values.metrics.port }}
             {{- end }}

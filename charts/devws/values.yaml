@@ -75,10 +75,14 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
-# Number of apiserver replicas. Controllers use leader election only with
-# more than one replica... they always run; multiple replicas are safe for
-# the API/SSH gateways.
+# Number of apiserver replicas. The controllers elect a leader (Lease in
+# the release namespace); the web API and SSH gateway are stateless and
+# serve from every replica.
 replicaCount: 1
+
+# Leader election for the controllers. Disable only for single-replica
+# setups without Lease permissions (coordination.k8s.io).
+leaderElection: true
 
 serviceAccount:
   create: true
