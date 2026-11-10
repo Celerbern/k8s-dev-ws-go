@@ -22,11 +22,12 @@ import (
 
 // fakeKubeClient stubs KubeClient for handler tests.
 type fakeKubeClient struct {
-	logs   io.ReadCloser
-	logErr error
-	logReq logRequest
-	events []corev1.Event
-	evErr  error
+	logs       io.ReadCloser
+	logErr     error
+	logReq     logRequest
+	events     []corev1.Event
+	eventsByNS map[string][]corev1.Event
+	evErr      error
 }
 
 type logRequest struct {
@@ -46,8 +47,14 @@ func (f *fakeKubeClient) StreamPodLogs(_ context.Context, namespace, pod, contai
 	return f.logs, nil
 }
 
-func (f *fakeKubeClient) ListEvents(_ context.Context, _ string) ([]corev1.Event, error) {
-	return f.events, f.evErr
+func (f *fakeKubeClient) ListEvents(_ context.Context, namespace string) ([]corev1.Event, error) {
+	if f.evErr != nil {
+		return nil, f.evErr
+	}
+	if f.eventsByNS != nil {
+		return f.eventsByNS[namespace], nil
+	}
+	return f.events, nil
 }
 
 type nopCloser struct{ io.Reader }

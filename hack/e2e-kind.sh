@@ -233,6 +233,15 @@ curl -fsS -H "$AUTH" "$API/api/users/e2e" | grep -q '"usage":{"workspaces":1,"ru
 }
 echo "ok"
 
+step "Admin audit log (events across user namespaces)"
+AUDIT=$(curl -fsS -b "$SSH_KEY_DIR/cookies" "$API/api/admin/events")
+echo "$AUDIT" | grep -q '"user":"e2e"' || { echo "FAILED: audit events not attributed to user e2e: $AUDIT"; exit 1; }
+echo "$AUDIT" | grep -q '"WorkspaceStarting"' || { echo "FAILED: no WorkspaceStarting in audit log: $AUDIT"; exit 1; }
+if curl -fsS -H "$AUTH" "$API/api/admin/events" >/dev/null 2>&1; then
+  echo "FAILED: non-admin must not read the audit log"; exit 1
+fi
+echo "ok"
+
 step "Workspace logs API"
 LOGS=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$WORKSPACE/logs?tail=100")
 [[ -n "$LOGS" ]] || { echo "FAILED: logs endpoint returned nothing"; exit 1; }

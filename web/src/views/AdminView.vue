@@ -7,10 +7,11 @@ import CreateUserModal from '../components/CreateUserModal.vue'
 import EditUserModal from '../components/EditUserModal.vue'
 import ResetPasswordModal from '../components/ResetPasswordModal.vue'
 
-const tab = ref<'users' | 'workspaces' | 'usage'>('users')
+const tab = ref<'users' | 'workspaces' | 'usage' | 'audit'>('users')
 const users = ref<User[]>([])
 const workspaces = ref<Workspace[]>([])
 const usage = ref<any>(null)
+const auditEvents = ref<any[] | null>(null)
 const error = ref('')
 const message = ref('')
 
@@ -34,6 +35,20 @@ async function refreshAll() {
   } catch (e) {
     error.value = (e as Error).message
   }
+}
+
+async function loadAudit() {
+  error.value = ''
+  try {
+    auditEvents.value = await api.get('/api/admin/events?limit=200')
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+function switchTab(t: 'users' | 'workspaces' | 'usage' | 'audit') {
+  tab.value = t
+  if (t === 'audit' && auditEvents.value === null) loadAudit()
 }
 
 async function toggleDisabled(user: User) {
@@ -66,6 +81,11 @@ function phaseClass(phase: string) {
     Failed: 'badge-failed',
   }[phase] ?? 'badge-stopped'
 }
+
+function fmtTime(iso: string) {
+  if (!iso) return ''
+  return iso.replace('T', ' ').replace('Z', ' UTC')
+}
 </script>
 
 <template>
@@ -75,11 +95,12 @@ function phaseClass(phase: string) {
     <p class="muted" v-if="message" style="color: var(--green)">{{ message }}</p>
 
     <div class="tabs">
-      <button :class="{ active: tab === 'users' }" @click="tab = 'users'">Users</button>
-      <button :class="{ active: tab === 'workspaces' }" @click="tab = 'workspaces'">
+      <button :class="{ active: tab === 'users' }" @click="switchTab('users')">Users</button>
+      <button :class="{ active: tab === 'workspaces' }" @click="switchTab('workspaces')">
         Workspaces
       </button>
-      <button :class="{ active: tab === 'usage' }" @click="tab = 'usage'">Usage</button>
+      <button :class="{ active: tab === 'usage' }" @click="switchTab('usage')">Usage</button>
+      <button :class="{ active: tab === 'audit' }" @click="switchTab('audit')">Audit log</button>
     </div>
 
     <template v-if="tab === 'users'">
@@ -213,6 +234,37 @@ function phaseClass(phase: string) {
           </tr>
         </tbody>
       </table>
+    </template>
+
+    <template v-if="tab === 'audit'">
+      <div class="spread" style="margin-bottom: 0">
+        <p class="muted" style="margin: 0">
+          Recent kubernetes events across all user namespaces (workspaces, pods, volumes).
+        </p>
+        <button class="btn btn-sm" @click="loadAudit">Refresh</button>
+      </div>
+      <table v-if="auditEvents?.length">
+        <thead>
+          <tr><th>Last seen</th><th>User</th><th>Type</th><th>Reason</th><th>Object</th><th>Message</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="(e, i) in auditEvents" :key="i">
+            <td class="muted" style="white-space: nowrap">{{ fmtTime(e.lastSeen) }}</td>
+            <td><strong>{{ e.user }}</strong></td>
+            <td>
+              <span class="badge" :class="e.type === 'Warning' ? 'badge-failed' : 'badge-running'">
+                {{ e.type }}
+              </span>
+            </td>
+            <td class="mono">{{ e.reason }}</td>
+            <td class="mono muted">{{ e.object }}</td>
+            <td class="muted">{{ e.message }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="empty" v-else-if="auditEvents">
+        No events recorded yet.
+      </div>
     </template>
 
     <CreateUserModal v-if="showCreateUser" @close="showCreateUser = false" @created="showCreateUser = false; refreshAll()" />

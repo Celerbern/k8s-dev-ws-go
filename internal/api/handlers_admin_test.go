@@ -3,6 +3,10 @@ package api
 import (
 	"net/http"
 	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
 )
@@ -113,5 +117,72 @@ func TestAdminUsageDeniedForUser(t *testing.T) {
 	resp := doJSON(t, client, "GET", srv.URL+"/api/admin/usage", nil, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin usage must be 403, got %d", resp.StatusCode)
+	}
+}
+
+// userNamespace builds a managed user namespace for audit tests.
+func userNamespace(name, user string, managed bool) *corev1.Namespace {
+	ns := &corev1.Namespace{}
+	ns.Name = name
+	if managed {
+		ns.Labels = map[string]string{
+			"devws.io/managed": "true",
+			"devws.io/user":    user,
+		}
+	}
+	return ns
+}
+
+func TestAdminEvents(t *testing.T) {
+	now := metav1.Now()
+	kube := &fakeKubeClient{eventsByNS: map[string][]corev1.Event{
+		"devws-alice": {{
+			InvolvedObject: corev1.ObjectReference{Kind: "Workspace", Name: "main", Namespace: "devws-alice"},
+			Reason:         "WorkspaceStarting", Type: corev1.EventTypeNormal, Message: "creating workspace pod", Count: 1,
+			FirstTimestamp: metav1.Time{Time: now.Add(-2 * time.Minute)}, LastTimestamp: metav1.Time{Time: now.Add(-1 * time.Minute)},
+		}},
+		"devws-bob": {{
+			InvolvedObject: corev1.ObjectReference{Kind: "Workspace", Name: "side", Namespace: "devws-bob"},
+			Reason:         "WorkspaceFailed", Type: corev1.EventTypeWarning, Message: "git clone failed", Count: 2,
+			FirstTimestamp: metav1.Time{Time: now.Add(-1 * time.Minute)}, LastTimestamp: now,
+		}},
+	}}
+	// The unmanaged kube-system namespace must not be scanned.
+	srv := newInspectionTestServer(t, kube,
+		testUser("root", "password123", "admin"),
+		testUser("bob", "password123", "user"),
+		userNamespace("devws-alice", "alice", true),
+		userNamespace("devws-bob", "bob", true),
+		userNamespace("kube-system", "", false))
+	client := loginClient(t, srv, "root", "password123")
+
+	var events []adminEventView
+	resp, _ := doGetJSON(t, client, srv.URL+"/api/admin/events", &events)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin events: %d", resp.StatusCode)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
+	}
+	// Newest first, attributed to the owning user.
+	if events[0].Reason != "WorkspaceFailed" || events[0].User != "bob" || events[0].Namespace != "devws-bob" {
+		t.Fatalf("newest event wrong: %+v", events[0])
+	}
+	if events[1].Reason != "WorkspaceStarting" || events[1].User != "alice" {
+		t.Fatalf("second event wrong: %+v", events[1])
+	}
+
+	// limit caps the result.
+	var limited []adminEventView
+	resp, _ = doGetJSON(t, client, srv.URL+"/api/admin/events?limit=1", &limited)
+	if resp.StatusCode != http.StatusOK || len(limited) != 1 {
+		t.Fatalf("limit=1 must return 1 event, got %d (%d)", len(limited), resp.StatusCode)
+	}
+
+	// Non-admins are denied.
+	userClient := loginClient(t, srv, "bob", "password123")
+	resp, _ = doGet(t, userClient, srv.URL+"/api/admin/events")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-admin events must be 403, got %d", resp.StatusCode)
 	}
 }

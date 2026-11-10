@@ -96,6 +96,7 @@ func (s *Server) routes() {
 
 	// admin
 	mux.HandleFunc("GET /api/admin/usage", s.requireAdmin(s.handleAdminUsage))
+	mux.HandleFunc("GET /api/admin/events", s.requireAdmin(s.handleAdminEvents))
 
 	// web UI
 	mux.Handle("GET /", web.Handler())
