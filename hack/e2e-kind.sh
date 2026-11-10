@@ -124,6 +124,14 @@ for _ in $(seq 1 30); do
 done
 kubectl get ns devws-e2e
 kubectl -n devws-e2e get resourcequota,networkpolicy
+# PodSecurityAdmission labels: privileged enforcement for dev tooling,
+# audit + warn at baseline (docs/security.md).
+for label in enforce:privileged audit:baseline warn:baseline; do
+  key="${label%%:*}"; want="${label##*:}"
+  got=$(kubectl get ns devws-e2e -o jsonpath="{.metadata.labels.pod-security\\.kubernetes\\.io/${key}}")
+  [[ "$got" == "$want" ]] || { echo "FAILED: psa $key = '$got', want '$want'"; exit 1; }
+done
+echo "psa labels ok"
 
 step "Getting a CLI token for user e2e"
 TOKEN=$(curl -fsS -H 'Content-Type: application/json' \

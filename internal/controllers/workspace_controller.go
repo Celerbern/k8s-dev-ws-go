@@ -501,6 +501,9 @@ exit $status
 				FSGroup:        ptr.To(int64(WorkspaceUID)),
 				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
+			// Workspaces never talk to the kubernetes API; do not even give
+			// them a service account token (docs/security.md).
+			AutomountServiceAccountToken: ptr.To(false),
 			Volumes: []corev1.Volume{
 				{
 					Name: "home",

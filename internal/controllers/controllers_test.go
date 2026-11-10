@@ -60,6 +60,17 @@ func TestUserReconcileCreatesNamespace(t *testing.T) {
 	if ns.Labels[LabelUser] != "alice" || ns.Labels[LabelManaged] != "true" {
 		t.Fatalf("namespace labels wrong: %v", ns.Labels)
 	}
+	// PodSecurityAdmission: privileged enforcement for dev tooling, but
+	// audited and warned at baseline (see docs/security.md).
+	for label, want := range map[string]string{
+		"pod-security.kubernetes.io/enforce": "privileged",
+		"pod-security.kubernetes.io/audit":   "baseline",
+		"pod-security.kubernetes.io/warn":    "baseline",
+	} {
+		if ns.Labels[label] != want {
+			t.Fatalf("psa label %s = %q, want %q", label, ns.Labels[label], want)
+		}
+	}
 
 	rq := &corev1.ResourceQuota{}
 	if err := r.Get(context.Background(), types.NamespacedName{Namespace: "devws-alice", Name: "devws-user-quota"}, rq); err != nil {
@@ -152,6 +163,9 @@ func TestWorkspaceReconcileCreatesResources(t *testing.T) {
 	}
 	if len(pod.Spec.Containers) != 1 || pod.Spec.Containers[0].Image != config.Default().WorkspaceImage {
 		t.Fatalf("pod container wrong: %+v", pod.Spec.Containers)
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken != false {
+		t.Fatal("workspace pods must not automount a service account token")
 	}
 
 	// Mark the pod Running+Ready and reconcile again for the status.

@@ -116,10 +116,15 @@ func (r *UserReconciler) ensureNamespace(ctx context.Context, user *devwsv1alpha
 			Labels: managedLabels(map[string]string{LabelUser: user.Name}),
 		},
 	}
-	// User workspaces run arbitrary development tooling, including
-	// containers-ish workloads, so the namespace opts out of the baseline
-	// pod security standard.
+	// PodSecurityAdmission: user workspaces run arbitrary development
+	// tooling (up to container-ish workloads), so enforcement opts out of
+	// the pod security standards. Audit and warn stay at baseline so that
+	// anything beyond it is recorded and surfaced to kubectl users; today's
+	// workspace pods pass baseline. See docs/security.md for the full
+	// decision record.
 	ns.Labels["pod-security.kubernetes.io/enforce"] = "privileged"
+	ns.Labels["pod-security.kubernetes.io/audit"] = "baseline"
+	ns.Labels["pod-security.kubernetes.io/warn"] = "baseline"
 	return createOrUpdate(ctx, r.Client, ns)
 }
 
