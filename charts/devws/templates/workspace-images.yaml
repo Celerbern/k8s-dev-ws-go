@@ -1,0 +1,25 @@
+{{/*
+Helm-seeded workspace image catalog. Each entry becomes a WorkspaceImage
+CR users can pick when creating a workspace.
+
+These entries are helm-managed: `helm upgrade` reverts manual edits made
+to them (including via the API/CLI). Entries created outside the chart
+are free-form and never touched by upgrades.
+*/}}
+{{- range .Values.workspaceImages }}
+---
+apiVersion: devws.io/v1alpha1
+kind: WorkspaceImage
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "devws.labels" $ | nindent 4 }}
+spec:
+  image: {{ .image | quote }}
+  {{- with .description }}
+  description: {{ . | quote }}
+  {{- end }}
+  {{- if .deprecated }}
+  deprecated: true
+  {{- end }}
+{{- end }}

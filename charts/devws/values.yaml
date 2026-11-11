@@ -21,6 +21,19 @@ imagePullSecrets: []
 # Image used for workspace pods by default (overridable per workspace).
 workspaceImage: ghcr.io/celerbern/devws-workspace:0.1.0
 
+# Workspace image catalog seeded at install/upgrade time. Each entry
+# becomes a WorkspaceImage CR users can pick when creating a workspace
+# (regular users are restricted to catalog images; admins may use any
+# image reference). These entries are helm-managed — helm upgrade
+# reverts manual edits to them; entries added via the API/CLI
+# (`devws image add`) are free-form. Example:
+#   workspaceImages:
+#     - name: python-3-12
+#       image: ghcr.io/acme/devws-python:3.12
+#       description: "Python 3.12 toolchain"
+#       deprecated: false
+workspaceImages: []
+
 # Bootstrap admin created by a post-install job. The password is only read
 # by the job; leave empty to skip bootstrap (manage User CRs yourself).
 admin:
