@@ -5,9 +5,10 @@ metadata:
   labels:
     {{- include "devws.labels" . | nindent 4 }}
 rules:
-  # devws custom resources are the source of truth.
+  # devws custom resources are the source of truth. workspaceimages is the
+  # admin-managed image catalog served by the REST API.
   - apiGroups: ["devws.io"]
-    resources: ["users", "workspaces"]
+    resources: ["users", "workspaces", "workspaceimages"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["devws.io"]
     resources: ["users/status", "workspaces/status"]
@@ -26,9 +27,12 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Secrets: workspace authorized_keys plus copies of the configured
+  # image pull secrets synced into user namespaces (delete prunes stale
+  # copies when the configured list changes).
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["resourcequotas"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

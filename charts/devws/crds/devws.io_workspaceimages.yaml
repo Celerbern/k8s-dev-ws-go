@@ -1,0 +1,83 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: workspaceimages.devws.io
+spec:
+  group: devws.io
+  names:
+    kind: WorkspaceImage
+    listKind: WorkspaceImageList
+    plural: workspaceimages
+    singular: workspaceimage
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.image
+      name: Image
+      type: string
+    - jsonPath: .spec.description
+      name: Description
+      type: string
+    - jsonPath: .spec.deprecated
+      name: Deprecated
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          WorkspaceImage is a catalog entry users can pick when creating a
+          workspace. Regular users may only run catalog images (or the platform
+          default); admins may use arbitrary image references. Entries are managed
+          by admins through the API/CLI or seeded by the helm chart.
+
+          The REST API serves the catalog straight from these CRs (there is no
+          reconciler — nothing to reconcile).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: WorkspaceImageSpec defines the desired state of a WorkspaceImage.
+            properties:
+              deprecated:
+                default: false
+                description: |-
+                  Deprecated hides the image from the workspace creation picker.
+                  Existing workspaces using it are unaffected.
+                type: boolean
+              description:
+                description: Description is shown in the workspace creation picker.
+                type: string
+              image:
+                description: |-
+                  Image is the full container image reference including its tag or
+                  digest, e.g. "ghcr.io/acme/devws-python:3.12".
+                minLength: 1
+                type: string
+            required:
+            - image
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
