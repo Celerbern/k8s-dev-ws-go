@@ -43,7 +43,7 @@ func newTestServer(t *testing.T, objects ...runtime.Object) *httptest.Server {
 		WithRuntimeObjects(objects...).
 		WithStatusSubresource(&devwsv1alpha1.User{}, &devwsv1alpha1.Workspace{}).
 		Build()
-	s := New("127.0.0.1:0", c, testScheme, config.Default(), auth.NewSessionManager([]byte("test-key-test-key-test-key-32!")), nil)
+	s := New("127.0.0.1:0", c, testScheme, config.Default(), auth.NewSessionManager([]byte("test-key-test-key-test-key-32!")), nil, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	return srv

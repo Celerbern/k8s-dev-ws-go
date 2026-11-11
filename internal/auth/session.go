@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -91,6 +92,49 @@ func (m *SessionManager) Verify(token string) (string, error) {
 		return "", ErrInvalidSession
 	}
 	return username, nil
+}
+
+// SignPayload returns an HMAC-signed token carrying arbitrary data for a
+// given purpose, valid for ttl. Tokens for different purposes cannot be
+// confused with each other or with session tokens (different format and
+// purpose field). Used for short-lived browser flow state such as the
+// OIDC login transaction cookie.
+func (m *SessionManager) SignPayload(purpose string, data []byte, ttl time.Duration) string {
+	if strings.Contains(purpose, ".") {
+		panic("auth: payload purpose must not contain '.'")
+	}
+	exp := time.Now().Add(ttl).Unix()
+	payload := fmt.Sprintf("p1.%s.%d.%s", purpose, exp, base64.RawURLEncoding.EncodeToString(data))
+	mac := hmac.New(sha256.New, m.key)
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return payload + "." + sig
+}
+
+// VerifyPayload checks the signature, purpose and expiry of a SignPayload
+// token and returns the original data.
+func (m *SessionManager) VerifyPayload(purpose, token string) ([]byte, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 5 || parts[0] != "p1" || parts[1] != purpose {
+		return nil, ErrInvalidSession
+	}
+	expStr, b64, sig := parts[2], parts[3], parts[4]
+	payload := fmt.Sprintf("p1.%s.%s.%s", parts[1], expStr, b64)
+	mac := hmac.New(sha256.New, m.key)
+	mac.Write([]byte(payload))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(sig), []byte(expected)) {
+		return nil, ErrInvalidSession
+	}
+	exp, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil || time.Now().Unix() > exp {
+		return nil, ErrInvalidSession
+	}
+	data, err := base64.RawURLEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, ErrInvalidSession
+	}
+	return data, nil
 }
 
 // loadOrCreateSecretKey loads a 32-byte key from a Secret, creating the

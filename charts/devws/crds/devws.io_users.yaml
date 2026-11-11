@@ -93,6 +93,17 @@ spec:
                   - name
                   type: object
                 type: array
+              authMethod:
+                default: local
+                description: |-
+                  AuthMethod is how the user authenticates: "local" (password) or
+                  "oidc" (external identity provider). It is exclusive: oidc users
+                  have no password and sign in through the platform's OIDC provider,
+                  where the configured username claim must match the user's name.
+                enum:
+                - local
+                - oidc
+                type: string
               disabled:
                 description: |-
                   Disabled prevents login, CLI token use and SSH access, and stops all
@@ -106,8 +117,9 @@ spec:
                   notifications).
                 type: string
               passwordHash:
-                description: PasswordHash is a bcrypt hash of the user's dashboard/CLI
-                  password.
+                description: |-
+                  PasswordHash is a bcrypt hash of the user's dashboard/CLI password.
+                  Empty for oidc users.
                 type: string
               quotas:
                 description: Quotas limits the resources the user may consume.

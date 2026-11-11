@@ -1,0 +1,133 @@
+# Dex identity provider for the e2e test (hack/e2e-kind.sh).
+#
+# Serves OIDC at http://devws-dex.devws-system.svc.cluster.local:5556/dex
+# (the issuer the devws apiserver discovers in-cluster; the host reaches it
+# through `kubectl port-forward svc/devws-dex 5556:5556` plus curl
+# --resolve, mirroring how a browser would follow the redirects).
+#
+# Identities (password: devws-oidc-password for all):
+#   e2e-oidc@example.com   → preferred_username "e2e-oidc"   (has a devws user)
+#   oidc-admin@example.com → preferred_username "oidc-admin" (has a devws admin user)
+#   nouser@example.com     → preferred_username "nouser"     (NO devws user)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devws-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devws-dex
+  namespace: devws-system
+  labels:
+    app.kubernetes.io/name: devws-dex
+data:
+  config.yaml: |
+    issuer: http://devws-dex.devws-system.svc.cluster.local:5556/dex
+
+    storage:
+      type: sqlite3
+      config:
+        file: /var/dex/dex.db
+
+    web:
+      http: 0.0.0.0:5556
+
+    # Local accounts; the login form posts the email as "login".
+    enablePasswordDB: true
+    staticPasswords:
+      - email: e2e-oidc@example.com
+        # bcrypt of "devws-oidc-password"
+        hash: "$2a$10$N4WoB/zFqlRmj163bU5DMOGrDxhEzG/jsEK4kqMSvWnhFCHZ/JIrG"
+        username: e2e-oidc
+        preferredUsername: e2e-oidc
+        userID: e2e-oidc
+      - email: oidc-admin@example.com
+        hash: "$2a$10$N4WoB/zFqlRmj163bU5DMOGrDxhEzG/jsEK4kqMSvWnhFCHZ/JIrG"
+        username: oidc-admin
+        preferredUsername: oidc-admin
+        userID: oidc-admin
+      - email: nouser@example.com
+        hash: "$2a$10$N4WoB/zFqlRmj163bU5DMOGrDxhEzG/jsEK4kqMSvWnhFCHZ/JIrG"
+        username: nouser
+        preferredUsername: nouser
+        userID: nouser
+
+    staticClients:
+      - id: devws
+        name: devws
+        secret: devws-e2e-client-secret
+        redirectURIs:
+          - http://127.0.0.1:18080/api/auth/oidc/callback
+
+    oauth2:
+      skipApprovalScreen: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devws-dex
+  namespace: devws-system
+  labels:
+    app.kubernetes.io/name: devws-dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: devws-dex
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: devws-dex
+    spec:
+      # ghcr.io/dexidp/dex runs as uid/gid 1001 (user "dex"); fsGroup makes
+      # the sqlite emptyDir writable by it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.46.1
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/dex"]
+          args: ["serve", "/etc/dex/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 5556
+          readinessProbe:
+            httpGet:
+              # Dex serves everything under the issuer path, including
+              # its health endpoint.
+              path: /dex/healthz
+              port: 5556
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dex
+              readOnly: true
+            - name: data
+              mountPath: /var/dex
+      volumes:
+        - name: config
+          configMap:
+            name: devws-dex
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: devws-dex
+  namespace: devws-system
+  labels:
+    app.kubernetes.io/name: devws-dex
+spec:
+  selector:
+    app.kubernetes.io/name: devws-dex
+  ports:
+    - name: http
+      port: 5556
+      targetPort: 5556

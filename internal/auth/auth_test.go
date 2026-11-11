@@ -73,3 +73,39 @@ func TestTokenRoundTrip(t *testing.T) {
 		t.Fatal("modified token must not match")
 	}
 }
+
+func TestPayloadSignVerify(t *testing.T) {
+	m := NewSessionManager([]byte("0123456789abcdef0123456789abcdef"))
+	token := m.SignPayload("oidc-tx", []byte(`{"s":"aa"}`), time.Minute)
+
+	data, err := m.VerifyPayload("oidc-tx", token)
+	if err != nil {
+		t.Fatalf("VerifyPayload: %v", err)
+	}
+	if string(data) != `{"s":"aa"}` {
+		t.Fatalf("got data %q", data)
+	}
+}
+
+func TestPayloadVerifyRejectsMisuse(t *testing.T) {
+	m1 := NewSessionManager([]byte("0123456789abcdef0123456789abcdef"))
+	m2 := NewSessionManager([]byte("fedcba9876543210fedcba9876543210"))
+	token := m1.SignPayload("oidc-tx", []byte("data"), time.Minute)
+
+	if _, err := m1.VerifyPayload("other-purpose", token); err == nil {
+		t.Fatal("token signed for another purpose must not verify")
+	}
+	if _, err := m1.VerifyPayload("oidc-tx", m1.Sign("alice")); err == nil {
+		t.Fatal("session token must not verify as payload token")
+	}
+	if _, err := m2.VerifyPayload("oidc-tx", token); err == nil {
+		t.Fatal("token signed with a different key must not verify")
+	}
+	if _, err := m1.VerifyPayload("oidc-tx", token+"x"); err == nil {
+		t.Fatal("tampered token must not verify")
+	}
+	expired := m1.SignPayload("oidc-tx", []byte("data"), -time.Minute)
+	if _, err := m1.VerifyPayload("oidc-tx", expired); err == nil {
+		t.Fatal("expired token must not verify")
+	}
+}

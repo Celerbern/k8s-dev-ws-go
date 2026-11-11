@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api, ApiError } from '../api'
 
 const emit = defineEmits<{ close: []; created: [] }>()
 
 const username = ref('')
 const password = ref('')
+const authMethod = ref('local')
 const email = ref('')
 const displayName = ref('')
 const role = ref('user')
@@ -13,13 +14,16 @@ const maxWorkspaces = ref<number | null>(null)
 const error = ref('')
 const busy = ref(false)
 
+const isOIDC = computed(() => authMethod.value === 'oidc')
+
 async function create() {
   error.value = ''
   busy.value = true
   try {
     await api.post('/api/users', {
       username: username.value,
-      password: password.value,
+      password: isOIDC.value ? undefined : password.value,
+      authMethod: authMethod.value,
       email: email.value,
       displayName: displayName.value,
       role: role.value,
@@ -51,6 +55,18 @@ async function create() {
         />
       </div>
       <div class="field">
+        <label for="u-auth">Authentication</label>
+        <select id="u-auth" v-model="authMethod">
+          <option value="local">Password</option>
+          <option value="oidc">Single sign-on (OIDC)</option>
+        </select>
+        <p class="muted hint" v-if="isOIDC">
+          The username must exactly match the identity provider's username claim
+          (e.g. the preferred_username). The user signs in with the SSO button on
+          the login page.
+        </p>
+      </div>
+      <div class="field" v-if="!isOIDC">
         <label for="u-password">Initial password (min 8 chars)</label>
         <input id="u-password" type="password" v-model="password" minlength="8" required />
       </div>
@@ -83,3 +99,10 @@ async function create() {
     </form>
   </div>
 </template>
+
+<style scoped>
+.hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+</style>

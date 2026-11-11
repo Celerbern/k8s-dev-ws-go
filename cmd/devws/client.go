@@ -179,6 +179,7 @@ type userView struct {
 	Email       string `json:"email"`
 	DisplayName string `json:"displayName"`
 	Role        string `json:"role"`
+	AuthMethod  string `json:"authMethod"`
 	Disabled    bool   `json:"disabled"`
 	Namespace   string `json:"namespace"`
 	CreatedAt   string `json:"createdAt"`

@@ -15,6 +15,7 @@ func loginCmd() *cobra.Command {
 	var (
 		sshHost string
 		sshPort int
+		token   string
 	)
 	cmd := &cobra.Command{
 		Use:   "login SERVER_URL",
@@ -26,32 +27,45 @@ func loginCmd() *cobra.Command {
 				server = "https://" + server
 			}
 
-			reader := bufio.NewReader(os.Stdin)
-			fmt.Print("username: ")
-			username, _ := reader.ReadString('\n')
-			username = strings.TrimSpace(username)
-			fmt.Print("password: ")
-			passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
-			fmt.Println()
-			if err != nil {
-				return err
-			}
-			password := string(passwordBytes)
-			if username == "" || password == "" {
-				return fmt.Errorf("username and password are required")
-			}
+			cfg := &Config{ServerURL: server, SSHHost: sshHost, SSHPort: sshPort, Token: token}
+			username := ""
 
-			cfg := &Config{ServerURL: server, SSHHost: sshHost, SSHPort: sshPort}
-			resp, err := apiPost[struct {
-				Token string `json:"token"`
-				Name  string `json:"name"`
-			}](cfg, "/api/auth/token", map[string]string{
-				"username": username,
-				"password": password,
-				"name":     "cli",
-			})
-			if err != nil {
-				return err
+			if token == "" {
+				reader := bufio.NewReader(os.Stdin)
+				fmt.Print("username: ")
+				username, _ = reader.ReadString('\n')
+				username = strings.TrimSpace(username)
+				fmt.Print("password: ")
+				passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
+				fmt.Println()
+				if err != nil {
+					return err
+				}
+				password := string(passwordBytes)
+				if username == "" || password == "" {
+					return fmt.Errorf("username and password are required")
+				}
+
+				resp, err := apiPost[struct {
+					Token string `json:"token"`
+					Name  string `json:"name"`
+				}](cfg, "/api/auth/token", map[string]string{
+					"username": username,
+					"password": password,
+					"name":     "cli",
+				})
+				if err != nil {
+					return err
+				}
+				cfg.Token = resp.Token
+			} else {
+				// --token: use a token minted in the web UI (the usual
+				// path for single sign-on users) and resolve who we are.
+				me, err := apiGet[userView](cfg, "/api/auth/me")
+				if err != nil {
+					return fmt.Errorf("validating token: %w", err)
+				}
+				username = me.Username
 			}
 
 			// Persist the advertised SSH endpoint from the server unless
@@ -66,16 +80,16 @@ func loginCmd() *cobra.Command {
 					}
 				}
 			}
-			cfg.Token = resp.Token
 			cfg.Username = username
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			fmt.Printf("logged in as %s (token %q stored in %s)\n", username, resp.Name, ConfigPath())
+			fmt.Printf("logged in as %s (token stored in %s)\n", username, ConfigPath())
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&sshHost, "ssh-host", "", "SSH gateway host to use in generated ssh configs (server-advertised when unset)")
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 0, "SSH gateway port to use in generated ssh configs (server-advertised when unset)")
+	cmd.Flags().StringVar(&token, "token", "", "use an API token minted in the web UI (for single sign-on users) instead of username/password")
 	return cmd
 }

@@ -42,6 +42,7 @@ type userView struct {
 	Email          string          `json:"email"`
 	DisplayName    string          `json:"displayName"`
 	Role           string          `json:"role"`
+	AuthMethod     string          `json:"authMethod"`
 	Disabled       bool            `json:"disabled"`
 	Namespace      string          `json:"namespace"`
 	CreatedAt      string          `json:"createdAt"`
@@ -123,6 +124,7 @@ func publicUser(u *devwsv1alpha1.User, workspaceCount int) *userView {
 		Email:          u.Spec.Email,
 		DisplayName:    u.Spec.DisplayName,
 		Role:           u.Spec.Role,
+		AuthMethod:     u.Spec.AuthMethod,
 		Disabled:       u.Spec.Disabled,
 		Namespace:      controllers.NamespaceFor(u.Name),
 		CreatedAt:      u.CreationTimestamp.UTC().Format(time.RFC3339),
@@ -131,6 +133,9 @@ func publicUser(u *devwsv1alpha1.User, workspaceCount int) *userView {
 	}
 	if v.Role == "" {
 		v.Role = "user"
+	}
+	if v.AuthMethod == "" {
+		v.AuthMethod = "local"
 	}
 	for _, k := range u.Spec.SSHPublicKeys {
 		pv := publicKeyView{Name: k.Name, CreatedAt: k.CreatedAt.UTC().Format(time.RFC3339)}
@@ -200,6 +205,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username    string `json:"username"`
 		Password    string `json:"password"`
+		AuthMethod  string `json:"authMethod"`
 		Email       string `json:"email"`
 		DisplayName string `json:"displayName"`
 		Role        string `json:"role"`
@@ -218,7 +224,19 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "username must be 2-30 chars of lowercase letters, digits and dashes")
 		return
 	}
-	if len(req.Password) < 8 {
+	if req.AuthMethod == "" {
+		req.AuthMethod = "local"
+	}
+	if req.AuthMethod != "local" && req.AuthMethod != "oidc" {
+		writeErr(w, http.StatusBadRequest, "authMethod must be local or oidc")
+		return
+	}
+	if req.AuthMethod == "oidc" {
+		if req.Password != "" {
+			writeErr(w, http.StatusBadRequest, "password cannot be set for oidc users")
+			return
+		}
+	} else if len(req.Password) < 8 {
 		writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
@@ -234,17 +252,20 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := auth.HashPassword(req.Password)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "failed to hash password")
-		return
-	}
 	user := &devwsv1alpha1.User{}
 	user.Name = req.Username
 	user.Spec.Email = req.Email
 	user.Spec.DisplayName = req.DisplayName
 	user.Spec.Role = req.Role
-	user.Spec.PasswordHash = hash
+	user.Spec.AuthMethod = req.AuthMethod
+	if req.AuthMethod == "local" {
+		hash, err := auth.HashPassword(req.Password)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "failed to hash password")
+			return
+		}
+		user.Spec.PasswordHash = hash
+	}
 	if req.Quotas != nil {
 		user.Spec.Quotas.MaxWorkspaces = req.Quotas.MaxWorkspaces
 		if req.Quotas.CPU != "" {
@@ -305,6 +326,7 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		Email       *string `json:"email"`
 		DisplayName *string `json:"displayName"`
 		Role        *string `json:"role"`
+		AuthMethod  *string `json:"authMethod"`
 		Disabled    *bool   `json:"disabled"`
 		Password    *string `json:"password"`
 		Quotas      *struct {
@@ -339,6 +361,35 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auth-method changes keep the local/oidc exclusivity invariant:
+	// switching to oidc drops the password, switching to local requires
+	// a new password in the same request. Admins cannot flip their own
+	// method — a mismatched username claim would lock them out.
+	newAuthMethod := ""
+	if req.AuthMethod != nil {
+		if *req.AuthMethod != "local" && *req.AuthMethod != "oidc" {
+			writeErr(w, http.StatusBadRequest, "authMethod must be local or oidc")
+			return
+		}
+		if user.Name == caller.Name {
+			writeErr(w, http.StatusBadRequest, "you cannot change your own auth method")
+			return
+		}
+		if *req.AuthMethod != user.Spec.AuthMethod {
+			newAuthMethod = *req.AuthMethod
+		}
+	}
+	if newAuthMethod == "oidc" && req.Password != nil {
+		writeErr(w, http.StatusBadRequest, "password cannot be set for oidc users")
+		return
+	}
+	if newAuthMethod == "local" {
+		if req.Password == nil || len(*req.Password) < 8 {
+			writeErr(w, http.StatusBadRequest, "switching to local auth requires a new password of at least 8 characters")
+			return
+		}
+	}
+
 	if req.Email != nil {
 		user.Spec.Email = *req.Email
 	}
@@ -351,7 +402,17 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	if req.Disabled != nil {
 		user.Spec.Disabled = *req.Disabled
 	}
+	if newAuthMethod != "" {
+		user.Spec.AuthMethod = newAuthMethod
+		if newAuthMethod == "oidc" {
+			user.Spec.PasswordHash = ""
+		}
+	}
 	if req.Password != nil {
+		if user.Spec.AuthMethod == "oidc" {
+			writeErr(w, http.StatusBadRequest, "password cannot be set for oidc users")
+			return
+		}
 		if len(*req.Password) < 8 {
 			writeErr(w, http.StatusBadRequest, "password must be at least 8 characters")
 			return
@@ -443,6 +504,10 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	user, ok := s.targetUser(w, r)
 	if !ok {
+		return
+	}
+	if user.Spec.AuthMethod == "oidc" {
+		writeErr(w, http.StatusBadRequest, "user authenticates via oidc single sign-on")
 		return
 	}
 	caller := UserFrom(r.Context())

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api, ApiError } from '../api'
 import type { User } from '../store'
 
@@ -9,12 +9,18 @@ const emit = defineEmits<{ close: []; saved: [] }>()
 const email = ref(props.user.email)
 const displayName = ref(props.user.displayName)
 const role = ref(props.user.role)
+const authMethod = ref(props.user.authMethod || 'local')
+const newPassword = ref('')
 const maxWorkspaces = ref(props.user.quotas.maxWorkspaces || null)
 const cpu = ref(props.user.quotas.cpu || '')
 const memory = ref(props.user.quotas.memory || '')
 const storage = ref(props.user.quotas.storage || '')
 const error = ref('')
 const busy = ref(false)
+
+const switchesToLocal = computed(
+  () => authMethod.value === 'local' && (props.user.authMethod || 'local') === 'oidc',
+)
 
 async function save() {
   error.value = ''
@@ -24,6 +30,8 @@ async function save() {
       email: email.value,
       displayName: displayName.value,
       role: role.value,
+      authMethod: authMethod.value,
+      password: switchesToLocal.value ? newPassword.value : undefined,
       quotas: {
         maxWorkspaces: maxWorkspaces.value ?? 0,
         cpu: cpu.value,
@@ -60,6 +68,21 @@ async function save() {
           <option value="admin">admin</option>
         </select>
       </div>
+      <div class="field">
+        <label for="e-auth">Authentication</label>
+        <select id="e-auth" v-model="authMethod">
+          <option value="local">Password</option>
+          <option value="oidc">Single sign-on (OIDC)</option>
+        </select>
+        <p class="muted hint" v-if="authMethod === 'oidc'">
+          The username must exactly match the identity provider's username claim;
+          switching to SSO removes the user's password.
+        </p>
+      </div>
+      <div class="field" v-if="switchesToLocal">
+        <label for="e-password">New password (min 8 chars, required when switching)</label>
+        <input id="e-password" type="password" v-model="newPassword" minlength="8" required />
+      </div>
       <h2>Quotas</h2>
       <div class="field">
         <label for="e-maxws">Max workspaces</label>
@@ -84,3 +107,10 @@ async function save() {
     </form>
   </div>
 </template>
+
+<style scoped>
+.hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+}
+</style>

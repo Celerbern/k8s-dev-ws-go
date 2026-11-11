@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # End-to-end test of devws on a local kind cluster.
 #
-# Flow: create kind cluster → build images → helm install → bootstrap admin
-# → create user via API → user creates workspace → registers SSH key →
-# connects over SSH through the gateway.
+# Flow: create kind cluster → build images → install Dex IdP → helm install
+# (with OIDC) → bootstrap admin → create user via API → user creates
+# workspace → registers SSH key → connects over SSH through the gateway →
+# OIDC single sign-on through Dex.
 #
 # Usage: ./hack/e2e-kind.sh [keep]
 #   keep  leave the cluster running after the test
@@ -19,15 +20,20 @@ METRICS="http://127.0.0.1:18081"
 SSH_PORT="${SSH_PORT:-2222}"
 ADMIN_PASSWORD="devws-e2e-password"
 USER_PASSWORD="devws-user-password"
+OIDC_PASSWORD="devws-oidc-password"
+DEX_IMAGE="ghcr.io/dexidp/dex:v2.46.1"
+DEX_HOST="devws-dex.${RELEASE_NS}.svc.cluster.local"
 WORKSPACE="e2e-ws"
 SSH_KEY_DIR="$(mktemp -d)"
 PF_PID=""
 PF2_PID=""
+PF3_PID=""
 
 cleanup() {
   local keep="${1:-}"
   kill "$PF_PID" 2>/dev/null || true
   kill "$PF2_PID" 2>/dev/null || true
+  kill "$PF3_PID" 2>/dev/null || true
   echo
   echo "=== e2e logs (devws apiserver) ==="
   kubectl -n "$RELEASE_NS" logs deploy/devws-apiserver --tail=80 || true
@@ -65,6 +71,10 @@ make docker-apiserver docker-workspace
 step "Loading images into kind"
 kind load docker-image devws-apiserver:dev --name "$KIND_NAME"
 kind load docker-image devws-workspace:dev --name "$KIND_NAME"
+# Dex (the OIDC identity provider for the e2e) is pulled from ghcr.io and
+# loaded into kind so the cluster never depends on image pulls mid-test.
+docker pull -q "$DEX_IMAGE"
+kind load docker-image "$DEX_IMAGE" --name "$KIND_NAME"
 
 # Reset any previous install so this script is safe to re-run: the image tag
 # stays :dev, so a stale deployment would keep running old code. The release
@@ -83,6 +93,13 @@ fi
 kubectl delete crd users.devws.io workspaces.devws.io --ignore-not-found --timeout=60s >/dev/null 2>&1 || true
 kubectl delete ns "$RELEASE_NS" devws-e2e devws-admin --ignore-not-found --timeout=120s >/dev/null 2>&1 || true
 
+# Dex must run before the chart install: the apiserver performs OIDC
+# discovery against the issuer at startup and would crash-loop otherwise.
+# The manifest carries its own Namespace object (the reset above deleted it).
+step "Starting Dex (OIDC identity provider)"
+kubectl apply -f hack/dex.yaml
+kubectl -n "$RELEASE_NS" rollout status deploy/devws-dex --timeout=180s
+
 step "Installing helm chart"
 helm upgrade --install devws charts/devws \
   --namespace "$RELEASE_NS" --create-namespace \
@@ -94,7 +111,12 @@ helm upgrade --install devws charts/devws \
   --set service.ssh.type=NodePort \
   --set service.ssh.nodePort=30022 \
   --set metrics.enabled=true \
-  --set admin.password="$ADMIN_PASSWORD"
+  --set admin.password="$ADMIN_PASSWORD" \
+  --set oidc.enabled=true \
+  --set "oidc.issuerUrl=http://${DEX_HOST}:5556/dex" \
+  --set oidc.clientId=devws \
+  --set oidc.clientSecret=devws-e2e-client-secret \
+  --set "oidc.redirectUrl=${API}/api/auth/oidc/callback"
 
 step "Waiting for the apiserver"
 kubectl -n "$RELEASE_NS" rollout status deploy/devws-apiserver --timeout=180s
@@ -288,6 +310,97 @@ kill "$PF2_PID" 2>/dev/null || true
 PF2_PID=""
 echo "ok"
 
+step "OIDC single sign-on (Dex IdP)"
+# The login page's provider probe must advertise SSO.
+curl -fsS "$API/api/auth/providers" | grep -q '"oidc":{"enabled":true}' || {
+  echo "FAILED: /api/auth/providers must report oidc as enabled"; exit 1
+}
+
+# Admin pre-creates the OIDC users — there is no auto-provisioning.
+curl -fsS -b "$SSH_KEY_DIR/cookies" -H 'Content-Type: application/json' \
+  -d '{"username":"e2e-oidc","authMethod":"oidc","email":"e2e-oidc@example.com"}' \
+  "$API/api/users" | grep -q '"authMethod":"oidc"' || {
+  echo "FAILED: could not create oidc user e2e-oidc"; exit 1
+}
+curl -fsS -b "$SSH_KEY_DIR/cookies" -H 'Content-Type: application/json' \
+  -d '{"username":"oidc-admin","authMethod":"oidc","role":"admin","email":"oidc-admin@example.com"}' \
+  "$API/api/users" | grep -q '"authMethod":"oidc"' || {
+  echo "FAILED: could not create oidc admin oidc-admin"; exit 1
+}
+
+# The host reaches Dex through a port-forward under its in-cluster DNS
+# name (the issuer the apiserver discovered), so the scripted browser
+# below follows the exact redirect chain a real browser would.
+kubectl -n "$RELEASE_NS" port-forward svc/devws-dex 5556:5556 >/dev/null 2>&1 &
+PF3_PID=$!
+DEX_UP=0
+for _ in $(seq 1 30); do
+  if curl -fsS --resolve "$DEX_HOST:5556:127.0.0.1" "http://$DEX_HOST:5556/dex/healthz" >/dev/null 2>&1; then
+    DEX_UP=1; break
+  fi
+  sleep 1
+done
+[[ "$DEX_UP" == 1 ]] || { echo "FAILED: dex did not come up on the port-forward"; exit 1; }
+
+# oidc_login plays the browser: start the flow at the apiserver, land on
+# the Dex password form, submit credentials (Dex static passwords log in
+# with the EMAIL as "login"), and follow the whole redirect chain back.
+# Prints the final URL after the last redirect. The jar starts empty so
+# a rejected login cannot inherit the previous user's session cookie.
+oidc_login() {
+  local jar="$1" email="$2"
+  local auth_url login_url
+  rm -f "$jar"
+  auth_url=$(curl -fsS -c "$jar" -o /dev/null -w '%{redirect_url}' "$API/api/auth/oidc/start")
+  [[ "$auth_url" == "http://${DEX_HOST}:5556/dex/auth?"* ]] || {
+    echo "FAILED: unexpected authorize redirect: $auth_url" >&2; return 1
+  }
+  login_url=$(curl -fsS -b "$jar" -c "$jar" --resolve "$DEX_HOST:5556:127.0.0.1" \
+    -o /dev/null -L -w '%{url_effective}' "$auth_url")
+  curl -fsS -b "$jar" -c "$jar" --resolve "$DEX_HOST:5556:127.0.0.1" \
+    -o /dev/null -L --max-redirs 10 \
+    --data-urlencode "login=$email" \
+    --data-urlencode "password=$OIDC_PASSWORD" \
+    -w '%{url_effective}' "$login_url"
+}
+
+OIDC_JAR="$SSH_KEY_DIR/oidc.jar"
+
+# A pre-created oidc user signs in and lands in the app with a session.
+END_URL=$(oidc_login "$OIDC_JAR" "e2e-oidc@example.com")
+[[ "$END_URL" == "$API/" ]] || { echo "FAILED: e2e-oidc login ended at $END_URL"; exit 1; }
+ME=$(curl -fsS -b "$OIDC_JAR" "$API/api/auth/me")
+echo "$ME" | grep -q '"username":"e2e-oidc"' || { echo "FAILED: me is not e2e-oidc: $ME"; exit 1; }
+echo "$ME" | grep -q '"authMethod":"oidc"' || { echo "FAILED: me lacks authMethod oidc: $ME"; exit 1; }
+
+# An oidc admin signs in and can use admin endpoints.
+END_URL=$(oidc_login "$OIDC_JAR" "oidc-admin@example.com")
+[[ "$END_URL" == "$API/" ]] || { echo "FAILED: oidc-admin login ended at $END_URL"; exit 1; }
+curl -fsS -b "$OIDC_JAR" "$API/api/users" | grep -q '"username":"oidc-admin"' || {
+  echo "FAILED: oidc admin cannot list users"; exit 1
+}
+
+# An identity without a pre-created user is rejected: no session, error
+# back on the login page.
+END_URL=$(oidc_login "$OIDC_JAR" "nouser@example.com")
+[[ "$END_URL" == "$API/login?error=oidc_unauthorized" ]] || {
+  echo "FAILED: nouser login ended at $END_URL"; exit 1
+}
+if curl -fsS -b "$OIDC_JAR" "$API/api/auth/me" >/dev/null 2>&1; then
+  echo "FAILED: unknown oidc identity must not get a session"; exit 1
+fi
+
+# OIDC users cannot sign in with a password (auth methods are exclusive).
+if curl -fsS -H 'Content-Type: application/json' \
+  -d "{\"username\":\"e2e-oidc\",\"password\":\"$OIDC_PASSWORD\"}" \
+  "$API/api/auth/login" >/dev/null 2>&1; then
+  echo "FAILED: oidc user must not be able to sign in with a password"; exit 1
+fi
+
+kill "$PF3_PID" 2>/dev/null || true
+PF3_PID=""
+echo "ok"
+
 step "Leader election: two replicas, failover, API keeps serving"
 kubectl -n "$RELEASE_NS" scale deploy/devws-apiserver --replicas=2
 kubectl -n "$RELEASE_NS" rollout status deploy/devws-apiserver --timeout=180s
@@ -405,5 +518,7 @@ echo "  bin/devws workspace logs demo -f     # live log tail"
 echo "  bin/devws code demo                  # VS Code Remote-SSH"
 echo "Web UI: $API (admin / $ADMIN_PASSWORD) — requires the port-forward:"
 echo "  kubectl -n $RELEASE_NS port-forward svc/devws-web 18080:80"
+echo "SSO: sign in as e2e-oidc / $OIDC_PASSWORD at Dex (port-forward 5556):"
+echo "  kubectl -n $RELEASE_NS port-forward svc/devws-dex 5556:5556"
 echo "Tear down with: kind delete cluster --name $KIND_NAME"
 exit 0

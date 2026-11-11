@@ -43,6 +43,46 @@ Two consequences of the design:
   before routing, and the same keys end up in the workspace's
   `authorized_keys` (Secret mounted read-only, mode 0400).
 
+### OIDC single sign-on (optional)
+
+When the `devws-oidc` Secret is present (chart values `oidc.*`), the
+login page additionally offers single sign-on through the configured
+identity provider. The design points:
+
+- **Authorization code flow with PKCE (S256), state and nonce.** The
+  state, nonce and PKCE verifier live in a short-lived (10 min)
+  HMAC-signed cookie scoped to the callback path
+  (`internal/oidc/oidc.go`), not in apiserver memory — any replica can
+  complete a login, and there is no flow state to protect on disk.
+  The ID token is fully verified (signature via the provider's JWKS,
+  issuer, audience, expiry) plus the nonce, rebound to the transaction
+  cookie.
+- **No auto-provisioning.** A successful OIDC login only maps the
+  configured username claim (default `preferred_username`, lowercased)
+  to an existing `User` CR with `spec.authMethod: oidc`. If no such user
+  exists — or the user is a local/password user — the login is
+  rejected and the browser lands on the login page with an error. The
+  identity provider can therefore never widen the user set on its own;
+  only admins create accounts.
+- **Auth methods are exclusive.** An `oidc` user has no password hash:
+  password login, password reset and CLI token issue via password are
+  all refused. Admins can switch a user's method (`oidc→local` requires
+  setting a new password immediately; `local→oidc` drops the password),
+  but never their own — a mismatched username claim would otherwise
+  lock the (only) admin out of the platform. The first admin is always
+  bootstrapped locally (helm `admin.*` values), so a broken IdP never
+  locks everyone out.
+- **The session issued is identical** to a password login (same
+  stateless cookie, same per-request re-checks of `role` and
+  `disabled`), so revocation semantics are unchanged: disable the user
+  or rotate the session key Secret. Logout is local (cookie clearing)
+  and does not end the session at the provider.
+- **Configuration** (issuer, client id/secret, redirect URL, username
+  claim, scopes) is read once at startup from the `devws-oidc` Secret in
+  the platform namespace; discovery runs against the issuer at startup
+  so a misconfigured provider fails the deployment loudly. See
+  [oidc.md](oidc.md) for setup.
+
 ## Isolation between users
 
 - One **namespace per user** (`devws-<name>`), labeled

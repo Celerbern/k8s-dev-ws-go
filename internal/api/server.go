@@ -21,6 +21,7 @@ import (
 	"github.com/celerbern/k8s-dev-ws-go/internal/auth"
 	"github.com/celerbern/k8s-dev-ws-go/internal/config"
 	devwsmetrics "github.com/celerbern/k8s-dev-ws-go/internal/metrics"
+	"github.com/celerbern/k8s-dev-ws-go/internal/oidc"
 	"github.com/celerbern/k8s-dev-ws-go/internal/web"
 )
 
@@ -33,13 +34,15 @@ type Server struct {
 	cfg        *config.Config
 	sessions   *auth.SessionManager
 	kube       KubeClient
+	oidc       *oidc.Provider
 	mux        *http.ServeMux
 	httpServer *http.Server
 }
 
 // New builds the server and registers all routes. kube may be nil (log and
-// event endpoints then answer 501); tests inject a fake.
-func New(addr string, c client.Client, scheme *runtime.Scheme, cfg *config.Config, sessions *auth.SessionManager, kube KubeClient) *Server {
+// event endpoints then answer 501); tests inject a fake. oidc may be nil,
+// which disables the OIDC login flow (local passwords only).
+func New(addr string, c client.Client, scheme *runtime.Scheme, cfg *config.Config, sessions *auth.SessionManager, kube KubeClient, oidcProvider *oidc.Provider) *Server {
 	s := &Server{
 		Addr:     addr,
 		client:   c,
@@ -47,6 +50,7 @@ func New(addr string, c client.Client, scheme *runtime.Scheme, cfg *config.Confi
 		cfg:      cfg,
 		sessions: sessions,
 		kube:     kube,
+		oidc:     oidcProvider,
 	}
 	s.routes()
 	return s
@@ -64,6 +68,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("POST /api/auth/token", s.handleIssueToken)
+	mux.HandleFunc("GET /api/auth/providers", s.handleAuthProviders)
+	mux.HandleFunc("GET /api/auth/oidc/start", s.handleOIDCStart)
+	mux.HandleFunc("GET /api/auth/oidc/callback", s.handleOIDCCallback)
 
 	// platform config
 	mux.HandleFunc("GET /api/config", s.requireAuth(s.handlePlatformConfig))

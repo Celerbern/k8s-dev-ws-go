@@ -39,3 +39,14 @@ devws is installed in namespace: {{ include "devws.namespace" . }}
 NOTE: ingress is disabled; for production set ingress.enabled=true and
       config.sshHost to your SSH endpoint.
 {{- end }}
+{{- if .Values.oidc.enabled }}
+
+5. OIDC single sign-on is enabled (issuer {{ .Values.oidc.issuerUrl }}).
+   Register this exact redirect URI with your identity provider:
+
+   {{ .Values.oidc.redirectUrl }}
+
+   Users are NOT auto-provisioned: create each user in the admin console
+   (or with `devws user create --auth-method oidc`) with a username that
+   matches the IdP's {{ .Values.oidc.usernameClaim | default "preferred_username" }} claim.
+{{- end }}

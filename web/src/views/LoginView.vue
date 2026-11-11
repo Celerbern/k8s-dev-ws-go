@@ -1,14 +1,35 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api, ApiError } from '../api'
 import { auth } from '../store'
 
 const router = useRouter()
+const route = useRoute()
 const username = ref('')
 const password = ref('')
 const error = ref('')
 const busy = ref(false)
+const oidcEnabled = ref(false)
+
+const errorTexts: Record<string, string> = {
+  oidc_unauthorized: 'Single sign-on failed: no devws account matches your identity.',
+  oidc_disabled: 'Single sign-on failed: your account is disabled.',
+  oidc_error: 'Single sign-on failed. Please try again.',
+}
+
+onMounted(async () => {
+  if (typeof route.query.error === 'string') {
+    error.value = errorTexts[route.query.error] ?? 'Sign-in failed. Please try again.'
+    router.replace({ path: '/login' })
+  }
+  try {
+    const providers = await api.get('/api/auth/providers')
+    oidcEnabled.value = providers?.oidc?.enabled === true
+  } catch {
+    /* local login still works */
+  }
+})
 
 async function submit() {
   error.value = ''
@@ -25,6 +46,10 @@ async function submit() {
   } finally {
     busy.value = false
   }
+}
+
+function ssoLogin() {
+  window.location.href = '/api/auth/oidc/start'
 }
 </script>
 
@@ -46,6 +71,10 @@ async function submit() {
         <span v-if="busy" class="spin"></span>
         <span v-else>Sign in</span>
       </button>
+      <template v-if="oidcEnabled">
+        <div class="login-divider"><span>or</span></div>
+        <button class="btn" type="button" @click="ssoLogin">Sign in with single sign-on</button>
+      </template>
     </form>
   </div>
 </template>
@@ -75,5 +104,20 @@ async function submit() {
 .btn {
   width: 100%;
   justify-content: center;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 </style>

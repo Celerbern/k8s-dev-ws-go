@@ -32,6 +32,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	if user.Spec.AuthMethod == "oidc" {
+		writeErr(w, http.StatusUnauthorized, "this account uses single sign-on")
+		return
+	}
 	if user.Spec.Disabled || user.Spec.PasswordHash == "" || !auth.CheckPassword(user.Spec.PasswordHash, req.Password) {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -71,6 +75,10 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := s.client.Get(ctx, client.ObjectKey{Name: req.Username}, &user); err != nil {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if user.Spec.AuthMethod == "oidc" {
+		writeErr(w, http.StatusUnauthorized, "this account uses single sign-on")
 		return
 	}
 	if user.Spec.Disabled || user.Spec.PasswordHash == "" || !auth.CheckPassword(user.Spec.PasswordHash, req.Password) {

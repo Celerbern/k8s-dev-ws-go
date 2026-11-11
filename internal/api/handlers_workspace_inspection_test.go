@@ -89,7 +89,7 @@ func newInspectionTestServer(t *testing.T, kube KubeClient, objects ...runtime.O
 		WithStatusSubresource(&devwsv1alpha1.User{}, &devwsv1alpha1.Workspace{}).
 		Build()
 	s := New("127.0.0.1:0", c, testScheme, config.Default(),
-		auth.NewSessionManager([]byte("test-key-test-key-test-key-32!")), kube)
+		auth.NewSessionManager([]byte("test-key-test-key-test-key-32!")), kube, nil)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	return srv

@@ -58,14 +58,18 @@ func userListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 4, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "USERNAME\tROLE\tEMAIL\tKEYS\tWORKSPACES\tCREATED")
+			fmt.Fprintln(w, "USERNAME\tROLE\tAUTH\tEMAIL\tKEYS\tWORKSPACES\tCREATED")
 			for _, u := range *items {
 				disabled := ""
 				if u.Disabled {
 					disabled = " (disabled)"
 				}
-				fmt.Fprintf(w, "%s%s\t%s\t%s\t%d\t%d\t%s\n",
-					u.Username, disabled, u.Role, u.Email, len(u.SSHPublicKeys), u.WorkspaceCount, u.CreatedAt)
+				auth := u.AuthMethod
+				if auth == "" {
+					auth = "local"
+				}
+				fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
+					u.Username, disabled, u.Role, auth, u.Email, len(u.SSHPublicKeys), u.WorkspaceCount, u.CreatedAt)
 			}
 			return w.Flush()
 		},
@@ -78,6 +82,7 @@ func userCreateCmd() *cobra.Command {
 		email       string
 		displayName string
 		role        string
+		authMethod  string
 		password    string
 		passwordEnv string
 		kubeconfig  string
@@ -93,20 +98,28 @@ func userCreateCmd() *cobra.Command {
 			if username == "" {
 				return fmt.Errorf("--username is required")
 			}
-			if password == "" && passwordEnv != "" {
-				password = strings.TrimSpace(os.Getenv(passwordEnv))
+			if authMethod == "" {
+				authMethod = "local"
 			}
-			if password == "" {
-				fmt.Print("password: ")
-				raw, err := term.ReadPassword(int(os.Stdin.Fd()))
-				fmt.Println()
-				if err != nil {
-					return err
+			if authMethod != "local" && authMethod != "oidc" {
+				return fmt.Errorf("--auth-method must be local or oidc")
+			}
+			if authMethod == "local" {
+				if password == "" && passwordEnv != "" {
+					password = strings.TrimSpace(os.Getenv(passwordEnv))
 				}
-				password = strings.TrimSpace(string(raw))
-			}
-			if len(password) < 8 {
-				return fmt.Errorf("password must be at least 8 characters")
+				if password == "" {
+					fmt.Print("password: ")
+					raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+					fmt.Println()
+					if err != nil {
+						return err
+					}
+					password = strings.TrimSpace(string(raw))
+				}
+				if len(password) < 8 {
+					return fmt.Errorf("password must be at least 8 characters")
+				}
 			}
 
 			kcfg := kubeconfig
@@ -122,16 +135,19 @@ func userCreateCmd() *cobra.Command {
 				return err
 			}
 
-			hash, err := auth.HashPassword(password)
-			if err != nil {
-				return err
-			}
 			user := &devwsv1alpha1.User{}
 			user.Name = username
 			user.Spec.Email = email
 			user.Spec.DisplayName = displayName
 			user.Spec.Role = role
-			user.Spec.PasswordHash = hash
+			user.Spec.AuthMethod = authMethod
+			if authMethod == "local" {
+				hash, err := auth.HashPassword(password)
+				if err != nil {
+					return err
+				}
+				user.Spec.PasswordHash = hash
+			}
 			if maxWS > 0 {
 				user.Spec.Quotas.MaxWorkspaces = maxWS
 			}
@@ -169,6 +185,7 @@ func userCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&email, "email", "", "email address")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "display name")
 	cmd.Flags().StringVar(&role, "role", "user", "role: user or admin")
+	cmd.Flags().StringVar(&authMethod, "auth-method", "local", "auth method: local (password) or oidc (single sign-on)")
 	cmd.Flags().StringVar(&password, "password", "", "password (prompted when empty)")
 	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "read the password from this environment variable")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "path to a kubeconfig (in-cluster config when empty)")

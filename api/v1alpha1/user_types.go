@@ -64,7 +64,15 @@ type UserSpec struct {
 	// Disabled prevents login, CLI token use and SSH access, and stops all
 	// of the user's workspaces.
 	Disabled bool `json:"disabled,omitempty"`
+	// AuthMethod is how the user authenticates: "local" (password) or
+	// "oidc" (external identity provider). It is exclusive: oidc users
+	// have no password and sign in through the platform's OIDC provider,
+	// where the configured username claim must match the user's name.
+	// +kubebuilder:validation:Enum=local;oidc
+	// +kubebuilder:default=local
+	AuthMethod string `json:"authMethod,omitempty"`
 	// PasswordHash is a bcrypt hash of the user's dashboard/CLI password.
+	// Empty for oidc users.
 	PasswordHash string `json:"passwordHash,omitempty"`
 	// SSHPublicKeys are the public keys the user may authenticate with.
 	SSHPublicKeys []SSHKey `json:"sshPublicKeys,omitempty"`

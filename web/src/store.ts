@@ -27,6 +27,7 @@ export interface User {
   email: string
   displayName: string
   role: string
+  authMethod: string
   disabled: boolean
   namespace: string
   createdAt: string

@@ -213,7 +213,7 @@ async function copy(text: string) {
           </form>
         </div>
 
-        <div class="card">
+        <div class="card" v-if="(me.authMethod || 'local') === 'local'">
           <h2>Change password</h2>
           <form @submit.prevent="changePassword">
             <div class="field">
@@ -228,6 +228,13 @@ async function copy(text: string) {
               Change password
             </button>
           </form>
+        </div>
+        <div class="card" v-else>
+          <h2>Single sign-on</h2>
+          <p class="muted" style="margin-top: 0">
+            Your account signs in with single sign-on (OIDC); there is no local
+            password to change.
+          </p>
         </div>
       </div>
     </div>

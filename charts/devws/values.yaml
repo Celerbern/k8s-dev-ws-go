@@ -17,6 +17,26 @@ admin:
   username: admin
   password: ""  # e.g. --set admin.password=$(openssl rand -base64 18)
 
+# OIDC single sign-on (optional). When enabled, a devws-oidc Secret is
+# created and the apiserver performs discovery against the issuer at
+# startup. Users are never auto-provisioned: an admin must pre-create
+# each user with authMethod "oidc" and a name matching the IdP's
+# username claim (see docs/oidc.md).
+oidc:
+  enabled: false
+  # Issuer identifier, e.g. https://dex.example.com/dex or
+  # https://accounts.google.com.
+  issuerUrl: ""
+  clientId: ""
+  clientSecret: ""  # e.g. --set oidc.clientSecret=$(openssl rand -base64 18)
+  # Absolute callback URL registered at the IdP:
+  #   https://<your-devws-host>/api/auth/oidc/callback
+  redirectUrl: ""
+  # ID token claim whose (lowercased) value must equal the devws username.
+  usernameClaim: preferred_username
+  # Comma-separated scopes; "openid" is always included.
+  scopes: "openid profile email"
+
 # Platform configuration rendered into the devws-config ConfigMap.
 config:
   # Advertised SSH endpoint (host or host:port) users connect to.

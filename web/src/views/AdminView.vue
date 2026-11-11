@@ -122,6 +122,7 @@ function fmtTime(iso: string) {
               <span class="badge" :class="u.role === 'admin' ? 'badge-provisioning' : 'badge-stopped'">
                 {{ u.role }}
               </span>
+              <span class="badge badge-stopped" v-if="(u.authMethod || 'local') === 'oidc'">SSO</span>
             </td>
             <td>{{ u.workspaceCount }}</td>
             <td>
@@ -131,7 +132,9 @@ function fmtTime(iso: string) {
             </td>
             <td style="text-align: right; white-space: nowrap">
               <button class="btn btn-sm" @click="editingUser = u">Edit</button>
-              <button class="btn btn-sm" @click="resettingUser = u">Reset pw</button>
+              <button class="btn btn-sm" v-if="(u.authMethod || 'local') === 'local'" @click="resettingUser = u">
+                Reset pw
+              </button>
               <button class="btn btn-sm" @click="toggleDisabled(u)">
                 {{ u.disabled ? 'Enable' : 'Disable' }}
               </button>

@@ -26,6 +26,7 @@ import (
 	"github.com/celerbern/k8s-dev-ws-go/internal/config"
 	"github.com/celerbern/k8s-dev-ws-go/internal/controllers"
 	devwsmetrics "github.com/celerbern/k8s-dev-ws-go/internal/metrics"
+	"github.com/celerbern/k8s-dev-ws-go/internal/oidc"
 	"github.com/celerbern/k8s-dev-ws-go/internal/sshgateway"
 )
 
@@ -129,6 +130,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Optional OIDC login: configured through the devws-oidc Secret
+	// (chart values oidc.*). A missing Secret disables it; a present
+	// but broken one fails startup after the probe below.
+	oidcProvider, err := oidc.LoadAndNew(ctx, directClient, platformNamespace, sessions)
+	if err != nil {
+		logger.Error(err, "cannot initialize oidc provider")
+		os.Exit(1)
+	}
+	if oidcProvider != nil {
+		logger.Info("oidc login enabled",
+			"issuer", oidcProvider.IssuerURL(),
+			"usernameClaim", oidcProvider.UsernameClaim())
+	}
+
 	// Controllers.
 	if err := (&controllers.UserReconciler{
 		Client:            mgr.GetClient(),
@@ -156,7 +171,7 @@ func main() {
 		logger.Error(err, "cannot create kube client")
 		os.Exit(1)
 	}
-	if err := mgr.Add(api.New(webAddr, mgr.GetClient(), mgr.GetScheme(), platformCfg, sessions, kubeClient)); err != nil {
+	if err := mgr.Add(api.New(webAddr, mgr.GetClient(), mgr.GetScheme(), platformCfg, sessions, kubeClient, oidcProvider)); err != nil {
 		logger.Error(err, "cannot add api server")
 		os.Exit(1)
 	}

@@ -63,6 +63,27 @@ open http://localhost:8080
 Or run the whole flow as one command: **`make kind-e2e`** (creates the
 cluster if missing, installs, and smoke-tests everything including SSH).
 
+## Single sign-on (OIDC)
+
+Browser login can be delegated to an OpenID Connect provider (Keycloak,
+Dex, Okta, …). Enable it at install time with the `oidc.*` values:
+
+```bash
+helm upgrade --install devws charts/devws ... \
+  --set oidc.enabled=true \
+  --set oidc.issuerUrl=https://dex.example.com/dex \
+  --set oidc.clientId=devws \
+  --set oidc.clientSecret=<secret> \
+  --set oidc.redirectUrl=https://devws.example.com/api/auth/oidc/callback
+```
+
+The login page then offers a "Sign in with single sign-on" button.
+Users are never auto-provisioned: an admin pre-creates each user with
+auth method *OIDC* (the username must match the provider's username
+claim), and unrecognized identities are rejected. The first admin is
+always bootstrapped locally, and admins can be OIDC users too. See
+[docs/oidc.md](docs/oidc.md) for details and provider caveats.
+
 ## Using workspaces
 
 In the web UI (or with the CLI):
