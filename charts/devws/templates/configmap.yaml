@@ -10,4 +10,7 @@ data:
   defaultClass: {{ .Values.config.defaultClass | quote }}
   storageClass: {{ .Values.config.storageClass | quote }}
   sshHost: {{ .Values.config.sshHost | quote }}
+  # One list drives both the control-plane ServiceAccount and workspace
+  # pods (rendered from the top-level imagePullSecrets value).
+  imagePullSecrets: {{ join "," .Values.imagePullSecrets | quote }}
   classes: {{ .Values.config.classes | toJson | quote }}

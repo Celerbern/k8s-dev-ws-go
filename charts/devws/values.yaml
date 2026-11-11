@@ -6,6 +6,16 @@ image:
   tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
+# Pull secrets for the control-plane image and for workspace pods (one
+# list drives both the apiserver ServiceAccount and workspace pods). The
+# referenced Secrets (type kubernetes.io/dockerconfigjson) must exist in
+# the release namespace, e.g.:
+#   kubectl -n <release-ns> create secret docker-registry my-registry \
+#     --docker-server=ghcr.io --docker-username=user --docker-password=pass
+# The user controller copies each into every devws-<user> namespace so
+# kubelet can read it where the pods run. Changing this list rolls the
+# apiserver (config is read at startup); rotating the secret contents
+# propagates without restarts.
 imagePullSecrets: []
 
 # Image used for workspace pods by default (overridable per workspace).

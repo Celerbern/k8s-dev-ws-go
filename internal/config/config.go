@@ -39,6 +39,10 @@ type Config struct {
 	StorageClass string
 	// SSHHost is the advertised SSH gateway endpoint (host or host:port).
 	SSHHost string
+	// ImagePullSecrets names Secrets (in the platform namespace) that
+	// workspace pods use to pull their images from private registries.
+	// The user controller copies each into every user namespace.
+	ImagePullSecrets []string
 	// Classes maps class names to size templates.
 	Classes map[string]ClassSpec
 }
@@ -47,10 +51,11 @@ type Config struct {
 // missing or incomplete.
 func Default() *Config {
 	return &Config{
-		WorkspaceImage: "ghcr.io/celerbern/devws-workspace:latest",
-		DefaultClass:   "medium",
-		StorageClass:   "",
-		SSHHost:        "ssh.devws.local",
+		WorkspaceImage:   "ghcr.io/celerbern/devws-workspace:latest",
+		DefaultClass:     "medium",
+		StorageClass:     "",
+		SSHHost:          "ssh.devws.local",
+		ImagePullSecrets: nil,
 		Classes: map[string]ClassSpec{
 			"tiny":   {CPU: "250m", Memory: "512Mi", Storage: "5Gi"},
 			"small":  {CPU: "2", Memory: "4Gi", Storage: "10Gi"},
@@ -97,6 +102,15 @@ func Load(ctx context.Context, c client.Reader, namespace string) (*Config, erro
 	if v := strings.TrimSpace(cm.Data["sshHost"]); v != "" {
 		cfg.SSHHost = v
 	}
+	// imagePullSecrets is a comma-separated list of secret names; the
+	// secrets themselves live in the platform namespace.
+	if raw := strings.TrimSpace(cm.Data["imagePullSecrets"]); raw != "" {
+		for _, name := range strings.Split(raw, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				cfg.ImagePullSecrets = append(cfg.ImagePullSecrets, name)
+			}
+		}
+	}
 	if raw := strings.TrimSpace(cm.Data["classes"]); raw != "" {
 		var classes map[string]ClassSpec
 		if err := json.Unmarshal([]byte(raw), &classes); err == nil && len(classes) > 0 {
@@ -113,6 +127,19 @@ func (c *Config) Class(name string) (ClassSpec, bool) {
 	}
 	spec, ok := c.Classes[name]
 	return spec, ok
+}
+
+// ImagePullSecretRefs returns the configured pull-secret names as the
+// LocalObjectReferences pods reference them by (nil when none).
+func (c *Config) ImagePullSecretRefs() []corev1.LocalObjectReference {
+	if len(c.ImagePullSecrets) == 0 {
+		return nil
+	}
+	refs := make([]corev1.LocalObjectReference, 0, len(c.ImagePullSecrets))
+	for _, name := range c.ImagePullSecrets {
+		refs = append(refs, corev1.LocalObjectReference{Name: name})
+	}
+	return refs
 }
 
 // SSHHostPort splits the advertised SSH endpoint into host and port

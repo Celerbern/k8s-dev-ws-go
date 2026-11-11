@@ -15,9 +15,10 @@ spec:
       labels:
         {{- include "devws.selectorLabels" . | nindent 8 }}
       annotations:
-        # Roll the deployment when the OIDC configuration changes (the
-        # apiserver reads it once at startup).
+        # Roll the deployment when the OIDC configuration or platform
+        # config changes (the apiserver reads both once at startup).
         checksum/oidc-secret: {{ include (print $.Template.BasePath "/oidc-secret.yaml") . | sha256sum }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
