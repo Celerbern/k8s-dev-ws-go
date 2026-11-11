@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -13,21 +14,28 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
 	"github.com/celerbern/k8s-dev-ws-go/internal/config"
 )
 
 // UserReconciler reconciles User objects: it maintains a namespace per user
-// containing a ResourceQuota and a default NetworkPolicy, and cleans the
-// namespace up when the user is deleted.
+// containing a ResourceQuota, a default NetworkPolicy and copies of the
+// configured image pull secrets, and cleans the namespace up when the user
+// is deleted.
 type UserReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
 	PlatformNamespace string
+	// Config carries the platform configuration (image pull secrets).
+	Config *config.Config
 }
 
 // +kubebuilder:rbac:groups=devws.io,resources=users,verbs=get;list;watch;create;update;patch;delete
@@ -85,6 +93,9 @@ func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 	if err := r.ensureNetworkPolicy(ctx, ns); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring network policy: %w", err)
+	}
+	if err := r.ensureImagePullSecrets(ctx, logger, ns); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensuring image pull secrets: %w", err)
 	}
 
 	if err := r.setStatus(ctx, &user, "Ready", ns, ""); err != nil {
@@ -189,6 +200,69 @@ func (r *UserReconciler) ensureNetworkPolicy(ctx context.Context, ns string) err
 	return createOrUpdate(ctx, r.Client, np)
 }
 
+// LabelImagePullSecret marks the secret copies the user controller syncs
+// from the platform namespace; only secrets with this label are pruned.
+const LabelImagePullSecret = "devws.io/image-pull-secret"
+
+// ensureImagePullSecrets copies each configured pull secret from the
+// platform namespace into the user namespace (kubelet only reads pull
+// secrets from the pod's own namespace) and prunes copies of secrets that
+// are no longer configured. Secrets without the marker label are never
+// touched. A missing source secret is logged and skipped — pod pull
+// failures will surface it.
+func (r *UserReconciler) ensureImagePullSecrets(ctx context.Context, logger logr.Logger, ns string) error {
+	if r.Config == nil {
+		return nil
+	}
+	wanted := make(map[string]bool, len(r.Config.ImagePullSecrets))
+	for _, name := range r.Config.ImagePullSecrets {
+		wanted[name] = true
+	}
+	for _, name := range r.Config.ImagePullSecrets {
+		src := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: r.PlatformNamespace, Name: name}, src); err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.Info("configured image pull secret is missing in the platform namespace",
+					"secret", name, "namespace", r.PlatformNamespace)
+				continue
+			}
+			return err
+		}
+		desired := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: ns,
+				Labels: managedLabels(map[string]string{
+					LabelImagePullSecret: "true",
+				}),
+			},
+			Type: src.Type,
+			Data: src.DeepCopy().Data,
+		}
+		if err := createOrUpdate(ctx, r.Client, desired); err != nil {
+			return err
+		}
+	}
+	// Prune stale copies: marker-labeled secrets no longer configured.
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets,
+		client.InNamespace(ns),
+		client.MatchingLabels{LabelImagePullSecret: "true"}); err != nil {
+		return err
+	}
+	for i := range secrets.Items {
+		name := secrets.Items[i].Name
+		if wanted[name] {
+			continue
+		}
+		logger.Info("pruning stale image pull secret copy", "secret", name, "namespace", ns)
+		if err := r.Delete(ctx, &secrets.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *UserReconciler) setStatus(ctx context.Context, user *devwsv1alpha1.User, phase, ns, msg string) error {
 	desired := devwsv1alpha1.UserStatus{Phase: phase, Namespace: ns, Message: msg}
 	if statusChanged(user.Status, desired) {
@@ -198,9 +272,46 @@ func (r *UserReconciler) setStatus(ctx context.Context, user *devwsv1alpha1.User
 	return nil
 }
 
-// SetupWithManager registers the controller with the manager.
+// SetupWithManager registers the controller with the manager. It also
+// watches Secrets in the platform namespace: a change to a configured
+// image pull secret (credential rotation) re-syncs the copies in every
+// user namespace. kubelet re-reads pull secrets on each pull attempt, so
+// rotated credentials apply to running pods without restarts.
 func (r *UserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&devwsv1alpha1.User{}).
+		Watches(&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.usersForPullSecret),
+			builder.WithPredicates(predicate.NewPredicateFuncs(r.isWatchedPullSecret))).
 		Complete(r)
+}
+
+// usersForPullSecret enqueues every user; the reconciler then refreshes
+// the pull-secret copies in each user namespace.
+func (r *UserReconciler) usersForPullSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	_ = obj
+	var users devwsv1alpha1.UserList
+	if err := r.List(ctx, &users); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(users.Items))
+	for i := range users.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: users.Items[i].Name}})
+	}
+	return reqs
+}
+
+// isWatchedPullSecret reports whether a secret event should re-sync
+// users: the secret lives in the platform namespace and is configured as
+// an image pull secret.
+func (r *UserReconciler) isWatchedPullSecret(obj client.Object) bool {
+	if r.Config == nil || obj.GetNamespace() != r.PlatformNamespace {
+		return false
+	}
+	for _, name := range r.Config.ImagePullSecrets {
+		if obj.GetName() == name {
+			return true
+		}
+	}
+	return false
 }

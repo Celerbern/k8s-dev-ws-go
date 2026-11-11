@@ -149,6 +149,7 @@ func main() {
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		PlatformNamespace: platformNamespace,
+		Config:            platformCfg,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "cannot setup user controller")
 		os.Exit(1)

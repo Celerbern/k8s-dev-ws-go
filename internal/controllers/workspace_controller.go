@@ -363,6 +363,19 @@ func (r *WorkspaceReconciler) ensurePod(ctx context.Context, ws *devwsv1alpha1.W
 			return nil, nil
 		}
 	}
+	// Recreate when the configured pull-secret list changed, so pods
+	// stuck in ImagePullBackOff after a config change start over with
+	// the new secrets (the list is read once at startup).
+	if !pullSecretsMatch(pod, r.Config) {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(ws, corev1.EventTypeNormal, "WorkspaceRestarting",
+				"recreating pod for image pull secret list change")
+		}
+		if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		return nil, nil
+	}
 	// Recreate when gitRepos changed, so newly listed repos are cloned on
 	// the next start (already-cloned repos are skipped by the init
 	// container).
@@ -404,6 +417,27 @@ func gitReposHash(repos []string) string {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(cleaned, "\n")))
 	return fmt.Sprintf("sha256-%x", sum)
+}
+
+// pullSecretsMatch reports whether the pod's image pull secrets equal the
+// configured list (order-insensitive; kubelet does not care about order).
+func pullSecretsMatch(pod *corev1.Pod, cfg *config.Config) bool {
+	if len(pod.Spec.ImagePullSecrets) != len(cfg.ImagePullSecrets) {
+		return false
+	}
+	got := make([]string, 0, len(pod.Spec.ImagePullSecrets))
+	for _, ref := range pod.Spec.ImagePullSecrets {
+		got = append(got, ref.Name)
+	}
+	sort.Strings(got)
+	want := append([]string(nil), cfg.ImagePullSecrets...)
+	sort.Strings(want)
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // buildWorkspacePod renders the workspace pod spec.
@@ -497,6 +531,9 @@ exit $status
 			Annotations: map[string]string{gitReposAnnotation: gitReposHash(ws.Spec.GitRepos)},
 		},
 		Spec: corev1.PodSpec{
+			// Pull secrets for private registries, synced into the
+			// namespace by the user controller.
+			ImagePullSecrets: cfg.ImagePullSecretRefs(),
 			SecurityContext: &corev1.PodSecurityContext{
 				FSGroup:        ptr.To(int64(WorkspaceUID)),
 				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
