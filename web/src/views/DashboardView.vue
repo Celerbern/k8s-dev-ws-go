@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { api, ApiError } from '../api'
-import { auth, type PlatformConfig, type Workspace } from '../store'
+import { auth, type PlatformConfig, type Workspace, type WorkspaceImage } from '../store'
 import ConnectionCard from '../components/ConnectionCard.vue'
 import CreateWorkspaceModal from '../components/CreateWorkspaceModal.vue'
 
 const workspaces = ref<Workspace[]>([])
 const config = ref<PlatformConfig | null>(null)
+const images = ref<WorkspaceImage[]>([])
 const error = ref('')
 const busy = ref('')
 const showCreate = ref(false)
@@ -28,6 +29,11 @@ async function refresh() {
 
 onMounted(async () => {
   config.value = await api.get('/api/config')
+  try {
+    images.value = await api.get('/api/workspace-images')
+  } catch {
+    images.value = [] // picker falls back to the platform default
+  }
   await refresh()
   timer = window.setInterval(refresh, 4000)
 })
@@ -135,6 +141,7 @@ function phaseClass(phase: string) {
     <CreateWorkspaceModal
       v-if="showCreate"
       :config="config"
+      :images="images"
       @close="showCreate = false"
       @created="showCreate = false; refresh()"
     />

@@ -64,6 +64,14 @@ export interface WorkspaceEvent {
   lastSeen: string
 }
 
+export interface WorkspaceImage {
+  name: string
+  image: string
+  description: string
+  deprecated: boolean
+  usedBy?: number
+}
+
 export interface PlatformConfig {
   sshHost: string
   sshPort: number

@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, ApiError } from '../api'
-import type { User, Workspace } from '../store'
+import type { User, Workspace, WorkspaceImage } from '../store'
 import { qtyPct, numPct, meterClass } from '../quantity'
+import AddImageModal from '../components/AddImageModal.vue'
 import CreateUserModal from '../components/CreateUserModal.vue'
 import EditUserModal from '../components/EditUserModal.vue'
 import ResetPasswordModal from '../components/ResetPasswordModal.vue'
 
-const tab = ref<'users' | 'workspaces' | 'usage' | 'audit'>('users')
+const tab = ref<'users' | 'workspaces' | 'images' | 'usage' | 'audit'>('users')
 const users = ref<User[]>([])
 const workspaces = ref<Workspace[]>([])
+const images = ref<WorkspaceImage[]>([])
 const usage = ref<any>(null)
 const auditEvents = ref<any[] | null>(null)
 const error = ref('')
 const message = ref('')
 
 const showCreateUser = ref(false)
+const showAddImage = ref(false)
 const editingUser = ref<User | null>(null)
 const resettingUser = ref<User | null>(null)
 
@@ -24,13 +27,15 @@ onMounted(refreshAll)
 async function refreshAll() {
   error.value = ''
   try {
-    const [u, w, s] = await Promise.all([
+    const [u, w, i, s] = await Promise.all([
       api.get('/api/users'),
       api.get('/api/workspaces?scope=all'),
+      api.get('/api/workspace-images'),
       api.get('/api/admin/usage'),
     ])
     users.value = u
     workspaces.value = w
+    images.value = i
     usage.value = s
   } catch (e) {
     error.value = (e as Error).message
@@ -46,7 +51,7 @@ async function loadAudit() {
   }
 }
 
-function switchTab(t: 'users' | 'workspaces' | 'usage' | 'audit') {
+function switchTab(t: 'users' | 'workspaces' | 'images' | 'usage' | 'audit') {
   tab.value = t
   if (t === 'audit' && auditEvents.value === null) loadAudit()
 }
@@ -67,6 +72,28 @@ async function deleteUser(user: User) {
   try {
     await api.del(`/api/users/${user.username}`)
     message.value = `User ${user.username} is being deleted.`
+    await refreshAll()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+async function toggleDeprecated(img: WorkspaceImage) {
+  error.value = ''
+  try {
+    await api.patch(`/api/workspace-images/${img.name}`, { deprecated: !img.deprecated })
+    await refreshAll()
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+async function deleteImage(img: WorkspaceImage) {
+  const where = img.usedBy ? ` (${img.usedBy} workspace(s) still use it)` : ''
+  if (!confirm(`Remove image "${img.name}" from the catalog?${where}`)) return
+  error.value = ''
+  try {
+    await api.del(`/api/workspace-images/${img.name}`)
     await refreshAll()
   } catch (e) {
     error.value = (e as Error).message
@@ -99,6 +126,7 @@ function fmtTime(iso: string) {
       <button :class="{ active: tab === 'workspaces' }" @click="switchTab('workspaces')">
         Workspaces
       </button>
+      <button :class="{ active: tab === 'images' }" @click="switchTab('images')">Images</button>
       <button :class="{ active: tab === 'usage' }" @click="switchTab('usage')">Usage</button>
       <button :class="{ active: tab === 'audit' }" @click="switchTab('audit')">Audit log</button>
     </div>
@@ -163,6 +191,46 @@ function fmtTime(iso: string) {
           </tr>
         </tbody>
       </table>
+    </template>
+
+    <template v-if="tab === 'images'">
+      <div class="spread">
+        <p class="muted" style="margin: 0">
+          {{ images.length }} catalog images — regular users can only create workspaces from these
+        </p>
+        <button class="btn btn-primary" @click="showAddImage = true">+ New image</button>
+      </div>
+      <table v-if="images.length">
+        <thead>
+          <tr><th>Name</th><th>Image</th><th>Description</th><th>Deprecated</th><th>Used by</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="img in images" :key="img.name">
+            <td><strong>{{ img.name }}</strong></td>
+            <td class="mono">{{ img.image }}</td>
+            <td class="muted">{{ img.description || '—' }}</td>
+            <td>
+              <span class="badge" :class="img.deprecated ? 'badge-failed' : 'badge-running'">
+                {{ img.deprecated ? 'deprecated' : 'offered' }}
+              </span>
+            </td>
+            <td>{{ img.usedBy ?? 0 }}</td>
+            <td style="text-align: right; white-space: nowrap">
+              <button class="btn btn-sm" @click="toggleDeprecated(img)">
+                {{ img.deprecated ? 'Undeprecate' : 'Deprecate' }}
+              </button>
+              <button class="btn btn-sm btn-danger" @click="deleteImage(img)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="empty" v-else>
+        <p>No catalog images yet.</p>
+        <p class="muted">
+          Users can still create workspaces with the platform default image. Add entries to offer
+          alternatives (e.g. per-language toolchains).
+        </p>
+      </div>
     </template>
 
     <template v-if="tab === 'usage' && usage">
@@ -271,6 +339,7 @@ function fmtTime(iso: string) {
     </template>
 
     <CreateUserModal v-if="showCreateUser" @close="showCreateUser = false" @created="showCreateUser = false; refreshAll()" />
+    <AddImageModal v-if="showAddImage" @close="showAddImage = false" @created="showAddImage = false; refreshAll()" />
     <EditUserModal v-if="editingUser" :user="editingUser" @close="editingUser = null" @saved="editingUser = null; refreshAll()" />
     <ResetPasswordModal v-if="resettingUser" :user="resettingUser" @close="resettingUser = null" />
   </div>

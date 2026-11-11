@@ -1,16 +1,31 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { api, ApiError } from '../api'
-import type { PlatformConfig } from '../store'
+import type { PlatformConfig, WorkspaceImage } from '../store'
 
-const props = defineProps<{ config: PlatformConfig | null }>()
+const props = defineProps<{ config: PlatformConfig | null; images: WorkspaceImage[] }>()
 const emit = defineEmits<{ close: []; created: [] }>()
 
 const name = ref('')
+const image = ref('')
 const cls = ref('')
 const gitRepos = ref('')
 const error = ref('')
 const busy = ref(false)
+
+// Only non-deprecated catalog entries are offered; the empty value keeps
+// the platform default image.
+const selectableImages = computed(() => props.images.filter((i) => !i.deprecated))
+const imageHint = computed(() => {
+  const selected = selectableImages.value.find((i) => i.image === image.value)
+  return selected?.description || ''
+})
+
+// shortRef trims a full image reference to its last path element for the
+// picker label, e.g. "ghcr.io/acme/devws-python:3.12" -> "devws-python:3.12".
+function shortRef(ref: string) {
+  return ref.split('/').pop() ?? ref
+}
 
 const classNames = computed(() => Object.keys(props.config?.classes ?? {}))
 const classHint = computed(() => {
@@ -24,6 +39,7 @@ async function create() {
   try {
     await api.post('/api/workspaces', {
       name: name.value,
+      image: image.value || undefined,
       class: cls.value || undefined,
       gitRepos: gitRepos.value
         .split('\n')
@@ -54,6 +70,16 @@ async function create() {
           title="lowercase letters, digits and dashes"
           required
         />
+      </div>
+      <div class="field">
+        <label for="ws-image">Image</label>
+        <select id="ws-image" v-model="image">
+          <option value="">Platform default</option>
+          <option v-for="img in selectableImages" :key="img.name" :value="img.image">
+            {{ img.name }} ({{ shortRef(img.image) }})
+          </option>
+        </select>
+        <p class="muted hint" v-if="imageHint">{{ imageHint }}</p>
       </div>
       <div class="field">
         <label for="ws-class">Class</label>
