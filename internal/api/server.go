@@ -101,6 +101,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/workspaces/{name}/logs", s.requireAuth(s.handleWorkspaceLogs))
 	mux.HandleFunc("GET /api/workspaces/{name}/events", s.requireAuth(s.handleWorkspaceEvents))
 
+	// workspace image catalog
+	mux.HandleFunc("GET /api/workspace-images", s.requireAuth(s.handleListWorkspaceImages))
+	mux.HandleFunc("POST /api/workspace-images", s.requireAdmin(s.handleCreateWorkspaceImage))
+	mux.HandleFunc("PATCH /api/workspace-images/{name}", s.requireAdmin(s.handlePatchWorkspaceImage))
+	mux.HandleFunc("DELETE /api/workspace-images/{name}", s.requireAdmin(s.handleDeleteWorkspaceImage))
+
 	// admin
 	mux.HandleFunc("GET /api/admin/usage", s.requireAdmin(s.handleAdminUsage))
 	mux.HandleFunc("GET /api/admin/events", s.requireAdmin(s.handleAdminEvents))

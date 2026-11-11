@@ -136,6 +136,12 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Image policy: empty = platform default; catalog images for regular
+	// users; anything (well-formed) for admins.
+	req.Image = strings.TrimSpace(req.Image)
+	if !s.validateWorkspaceImage(w, r, caller, req.Image) {
+		return
+	}
 
 	ctx := r.Context()
 	ns := controllers.NamespaceFor(owner)
@@ -248,6 +254,7 @@ func (s *Server) handlePatchWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	caller := UserFrom(r.Context())
 	if req.Class != nil && *req.Class != "" {
 		if _, ok := s.cfg.Class(*req.Class); !ok {
 			writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown workspace class %q", *req.Class))
@@ -256,7 +263,14 @@ func (s *Server) handlePatchWorkspace(w http.ResponseWriter, r *http.Request) {
 		ws.Spec.Class = *req.Class
 	}
 	if req.Image != nil {
-		ws.Spec.Image = *req.Image
+		// Image policy on the new value: empty clears the override (back
+		// to the platform default), anything else is validated like a
+		// create. The policy follows the caller, not the owner.
+		image := strings.TrimSpace(*req.Image)
+		if !s.validateWorkspaceImage(w, r, caller, image) {
+			return
+		}
+		ws.Spec.Image = image
 	}
 	if req.Paused != nil {
 		ws.Spec.Paused = *req.Paused
