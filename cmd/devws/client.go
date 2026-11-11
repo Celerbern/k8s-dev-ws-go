@@ -224,6 +224,14 @@ type eventView struct {
 	LastSeen  string `json:"lastSeen"`
 }
 
+type workspaceImageView struct {
+	Name        string `json:"name"`
+	Image       string `json:"image"`
+	Description string `json:"description"`
+	Deprecated  bool   `json:"deprecated"`
+	UsedBy      int    `json:"usedBy,omitempty"`
+}
+
 type platformConfig struct {
 	SSHHost        string `json:"sshHost"`
 	SSHPort        int    `json:"sshPort"`

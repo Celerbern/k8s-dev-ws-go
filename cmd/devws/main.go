@@ -22,6 +22,7 @@ func main() {
 		whoamiCmd(),
 		logoutCmd(),
 		workspaceCmd(),
+		imageCmd(),
 		sshConfigCmd(),
 		sshCmd(),
 		codeCmd(),
