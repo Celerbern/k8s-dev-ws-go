@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/oauth2"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/celerbern/k8s-dev-ws-go/internal/auth"

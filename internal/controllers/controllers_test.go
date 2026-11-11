@@ -14,6 +14,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	devwsv1alpha1 "github.com/celerbern/k8s-dev-ws-go/api/v1alpha1"
@@ -38,6 +39,7 @@ func newUserReconciler(t *testing.T, objects ...runtime.Object) *UserReconciler 
 		Client:            c,
 		Scheme:            ctrlScheme,
 		PlatformNamespace: "devws-system",
+		Config:            config.Default(),
 	}
 }
 
@@ -401,5 +403,137 @@ func TestGitReposChangeRecreatesPod(t *testing.T) {
 	}
 	if want := gitReposHash(fresh.Spec.GitRepos); pod.Annotations[gitReposAnnotation] != want {
 		t.Fatalf("pod must carry the new git repos hash %q, got %q", want, pod.Annotations[gitReposAnnotation])
+	}
+}
+
+// ------------------------------------------------------ image pull secrets --
+
+// TestUserReconcileSyncsImagePullSecrets covers the full secret-sync
+// lifecycle: initial copy into the user namespace, content rotation, and
+// pruning when the configured list shrinks — without ever touching
+// secrets that carry no marker label.
+func TestUserReconcileSyncsImagePullSecrets(t *testing.T) {
+	ctx := context.Background()
+	user := &devwsv1alpha1.User{}
+	user.Name = "alice"
+	src := &corev1.Secret{}
+	src.Name = "my-registry"
+	src.Namespace = "devws-system"
+	src.Type = corev1.SecretTypeDockerConfigJson
+	src.Data = map[string][]byte{".dockerconfigjson": []byte(`{"auths":{"ghcr.io":{"auth":"old"}}}`)}
+	r := newUserReconciler(t, user, src)
+	r.Config = &config.Config{ImagePullSecrets: []string{"my-registry"}}
+
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "alice"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	copyNS := types.NamespacedName{Namespace: "devws-alice", Name: "my-registry"}
+	copied := &corev1.Secret{}
+	if err := r.Get(ctx, copyNS, copied); err != nil {
+		t.Fatalf("pull secret must be synced into the user namespace: %v", err)
+	}
+	if copied.Type != src.Type || string(copied.Data[".dockerconfigjson"]) != string(src.Data[".dockerconfigjson"]) {
+		t.Fatalf("synced secret content wrong: %+v", copied)
+	}
+	if copied.Labels[LabelImagePullSecret] != "true" || copied.Labels[LabelManaged] != "true" {
+		t.Fatalf("synced secret must carry the marker + managed labels: %v", copied.Labels)
+	}
+
+	// Rotation: updating the source must update the copy.
+	src.Data[".dockerconfigjson"] = []byte(`{"auths":{"ghcr.io":{"auth":"new"}}}`)
+	if err := r.Update(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "alice"}}); err != nil {
+		t.Fatal(err)
+	}
+	copied = &corev1.Secret{}
+	if err := r.Get(ctx, copyNS, copied); err != nil {
+		t.Fatal(err)
+	}
+	if string(copied.Data[".dockerconfigjson"]) != `{"auths":{"ghcr.io":{"auth":"new"}}}` {
+		t.Fatalf("rotated credentials must propagate, got %s", copied.Data[".dockerconfigjson"])
+	}
+
+	// Pruning: a stale copy disappears when the config drops the secret,
+	// while unrelated (unmarked) secrets in the namespace are untouched.
+	unrelated := &corev1.Secret{}
+	unrelated.Name = "user-owned"
+	unrelated.Namespace = "devws-alice"
+	if err := r.Create(ctx, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	r.Config = &config.Config{}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "alice"}}); err != nil {
+		t.Fatal(err)
+	}
+	err := r.Get(ctx, copyNS, copied)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("stale pull secret copy must be pruned, got %v", err)
+	}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "user-owned"}, unrelated); err != nil {
+		t.Fatalf("unrelated secrets must never be pruned: %v", err)
+	}
+}
+
+// TestUserReconcileMissingPullSecretSource verifies a missing source
+// secret is skipped (with a log) instead of failing the reconcile.
+func TestUserReconcileMissingPullSecretSource(t *testing.T) {
+	ctx := context.Background()
+	user := &devwsv1alpha1.User{}
+	user.Name = "alice"
+	r := newUserReconciler(t, user)
+	r.Config = &config.Config{ImagePullSecrets: []string{"does-not-exist"}}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "alice"}}); err != nil {
+		t.Fatalf("missing source secret must not fail the reconcile: %v", err)
+	}
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace("devws-alice")); err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets.Items) != 0 {
+		t.Fatalf("nothing must be synced for a missing source, got %v", secrets.Items)
+	}
+}
+
+// TestWorkspacePodImagePullSecrets verifies pods carry the configured
+// pull secrets and are recreated when the configured list changes.
+func TestWorkspacePodImagePullSecrets(t *testing.T) {
+	ctx := context.Background()
+	user := &devwsv1alpha1.User{}
+	user.Name = "alice"
+	ws := &devwsv1alpha1.Workspace{}
+	ws.Name = "main"
+	ws.Namespace = "devws-alice"
+	ws.Spec.UserRef = "alice"
+	r := newWorkspaceReconciler(t, user, ws)
+	r.Config.ImagePullSecrets = []string{"my-registry"}
+
+	reconcileNTimes(t, r, "devws-alice", "main", 3)
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, pod); err != nil {
+		t.Fatal(err)
+	}
+	if len(pod.Spec.ImagePullSecrets) != 1 || pod.Spec.ImagePullSecrets[0].Name != "my-registry" {
+		t.Fatalf("pod must carry the configured pull secret: %+v", pod.Spec.ImagePullSecrets)
+	}
+
+	// Config change: the pod is recreated with the new list.
+	r.Config.ImagePullSecrets = []string{"my-registry", "other-registry"}
+	reconcileNTimes(t, r, "devws-alice", "main", 3)
+	pod = &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "devws-alice", Name: "main"}, pod); err != nil {
+		t.Fatalf("pod must be recreated after the pull-secret list changed: %v", err)
+	}
+	names := []string{}
+	for _, ref := range pod.Spec.ImagePullSecrets {
+		names = append(names, ref.Name)
+	}
+	if len(names) != 2 || names[0] != "my-registry" || names[1] != "other-registry" {
+		t.Fatalf("pod must carry the new pull-secret list, got %v", names)
 	}
 }

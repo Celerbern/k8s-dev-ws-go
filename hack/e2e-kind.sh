@@ -505,6 +505,53 @@ curl -fsS -H "$AUTH" "$API/api/workspaces/$BAD_WS/events" | grep -q '"WorkspaceF
 echo "clone failure surfaced ✓ — cleaning up"
 curl -fsS -X DELETE -H "$AUTH" "$API/api/workspaces/$BAD_WS" >/dev/null
 
+step "Workspace image catalog: admin adds, user picks, unknown image rejected"
+# Admin adds the (kind-loaded) workspace image to the catalog.
+curl -fsS -b "$SSH_KEY_DIR/cookies" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"e2e-image\",\"image\":\"devws-workspace:dev\",\"description\":\"e2e catalog image\"}" \
+  "$API/api/workspace-images" | grep -q '"name":"e2e-image"' || {
+  echo "FAILED: could not add catalog image"; exit 1
+}
+# Any authenticated user may list the catalog.
+curl -fsS -H "$AUTH" "$API/api/workspace-images" | grep -q '"name":"e2e-image"' || {
+  echo "FAILED: user cannot list catalog images"; exit 1
+}
+# A regular user creating a workspace with the catalog image succeeds...
+CAT_WS="e2e-img"
+curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$CAT_WS\",\"class\":\"tiny\",\"image\":\"devws-workspace:dev\"}" \
+  "$API/api/workspaces" | grep -q "\"name\":\"$CAT_WS\"" || {
+  echo "FAILED: user could not create workspace with catalog image"; exit 1
+}
+for _ in $(seq 1 90); do
+  PHASE=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$CAT_WS" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
+  [[ "$PHASE" == "Running" ]] && break
+  [[ "$PHASE" == "Failed" ]] && { echo "FAILED: catalog-image workspace Failed"; exit 1; }
+  sleep 2
+done
+[[ "$PHASE" == "Running" ]] || { echo "FAILED: catalog-image workspace never became Running (phase: $PHASE)"; exit 1; }
+echo "catalog-image workspace is Running"
+# ...while an image outside the catalog is rejected for regular users.
+if curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"e2e-bad-img","image":"not-in-catalog:1.0"}' \
+  "$API/api/workspaces" >/dev/null 2>&1; then
+  echo "FAILED: user must not create a workspace with a non-catalog image"; exit 1
+fi
+# Deprecating hides it from the picker (existing workspaces keep running).
+curl -fsS -b "$SSH_KEY_DIR/cookies" -X PATCH -H 'Content-Type: application/json' \
+  -d '{"deprecated":true}' "$API/api/workspace-images/e2e-image" | grep -q '"deprecated":true' || {
+  echo "FAILED: could not deprecate catalog image"; exit 1
+}
+if curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"e2e-dep-img\",\"class\":\"tiny\",\"image\":\"devws-workspace:dev\"}" \
+  "$API/api/workspaces" >/dev/null 2>&1; then
+  echo "FAILED: deprecated catalog image must be rejected for new workspaces"; exit 1
+fi
+PHASE=$(curl -fsS -H "$AUTH" "$API/api/workspaces/$CAT_WS" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
+[[ "$PHASE" == "Running" ]] || { echo "FAILED: deprecating the image broke the existing workspace (phase: $PHASE)"; exit 1; }
+echo "catalog policy ok — cleaning up"
+curl -fsS -X DELETE -H "$AUTH" "$API/api/workspaces/$CAT_WS" >/dev/null
+
 echo
 echo "====================================================================="
 echo "E2E PASSED"

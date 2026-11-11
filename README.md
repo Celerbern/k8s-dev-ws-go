@@ -9,10 +9,17 @@ devws lets users develop applications **inside a Kubernetes cluster**:
   **JetBrains Gateway** through an SSH gateway. No IDE plugins required.
 - **Git support** — git + ssh toolchains in every workspace, keys and
   credentials persist on the workspace volume, optional repo pre-clone.
-- **Admin console** — web UI for managing users, quotas and workspaces,
-  live usage vs quotas, and a cross-namespace audit log.
-- **Fully kubernetes-native** — users and workspaces are custom resources
-  (CRDs); there is **no database** to operate. Install with Helm.
+- **Workspace image catalog** — admins curate the images users can pick
+  (per-language toolchains, pinned tags); regular users are restricted to
+  the catalog, admins may use any image reference.
+- **Private registry support** — one `imagePullSecrets` list drives the
+  control plane and workspace pods; secrets are synced into every user
+  namespace and rotated live.
+- **Admin console** — web UI for managing users, quotas, workspaces and
+  the image catalog, live usage vs quotas, and a cross-namespace audit log.
+- **Fully kubernetes-native** — users, workspaces and catalog images are
+  custom resources (CRDs); there is **no database** to operate. Install
+  with Helm.
 
 ```
  Local machine                        k8s cluster
@@ -88,10 +95,11 @@ always bootstrapped locally, and admins can be OIDC users too. See
 
 In the web UI (or with the CLI):
 
-1. **Admin** creates a user (username, password, quotas).
+1. **Admin** creates a user (username, password, quotas) and curates the
+   **workspace image catalog** (Admin → Images, or `devws image add`).
 2. The user signs in and **adds an SSH public key** (Profile → SSH keys).
-3. The user creates a **workspace** (name + size class; optionally public
-   git repos to pre-clone).
+3. The user creates a **workspace** (name + size class; optionally an
+   image from the catalog and public git repos to pre-clone).
 4. Connect your IDE — the user's `~/.ssh/config` gets an entry per
    workspace:
 
@@ -125,6 +133,17 @@ bin/devws workspace logs main -f    # live log tail
 bin/devws workspace events main     # what the controller has been doing
 ```
 
+The image catalog is managed with `devws image` (changes require an
+admin login; everyone may `list`):
+
+```bash
+bin/devws image add python-3-12 --image ghcr.io/acme/devws-python --tag 3.12 \
+  --description "Python 3.12 toolchain"
+bin/devws image list
+bin/devws image deprecate python-3-12   # hide from the picker (--undo to restore)
+bin/devws image remove python-3-12      # existing workspaces keep running it
+```
+
 Your home directory (`/home/devws`) persists across stop/start; `git clone`,
 ssh keys, IDE caches and installed tools all survive. Workspaces created
 with `gitRepos` (web UI or `devws workspace create --git-repo <url>`) clone
@@ -153,18 +172,47 @@ restart the workspace to apply them immediately.
 | Component | What it does |
 |---|---|
 | `cmd/devws-apiserver` | Single Go binary: REST API + embedded Vue UI, `User`/`Workspace` controllers, SSH gateway |
-| `cmd/devws` | CLI: login, workspace lifecycle + logs/events, `ssh-config`, `key`, `token`, admin bootstrap |
-| `api/v1alpha1` | `User` and `Workspace` CRDs (kubernetes is the only datastore) |
-| `internal/controllers` | User → namespace + ResourceQuota + NetworkPolicy; Workspace → Pod + PVC + ssh Secret |
+| `cmd/devws` | CLI: login, workspace lifecycle + logs/events, image catalog, `ssh-config`, `key`, `token`, admin bootstrap |
+| `api/v1alpha1` | `User`, `Workspace` and `WorkspaceImage` CRDs (kubernetes is the only datastore) |
+| `internal/controllers` | User → namespace + ResourceQuota + NetworkPolicy + pull-secret sync; Workspace → Pod + PVC + ssh Secret |
 | `internal/sshgateway` | Public-key auth + namespace-scoped TCP routing |
 | `web/` | Vue 3 + Vite SPA (embedded into the Go binary) |
 | `images/workspace` | Ubuntu 24.04 + sshd + Go/Node/Python toolchains |
-| `charts/devws` | Helm chart incl. CRDs and admin bootstrap job |
+| `charts/devws` | Helm chart incl. CRDs, image catalog seed and admin bootstrap job |
 
 Workspace classes (CPU/RAM/disk templates), the default workspace image,
 storage class and per-user quotas are Helm values rendered into a ConfigMap.
 
 ## Operations
+
+**Workspace images** — the catalog (`WorkspaceImage` CRs, cluster-scoped)
+defines the images regular users can pick when creating a workspace;
+leaving the image empty keeps the platform default (`workspaceImage`
+value). Manage it via the admin console's *Images* tab or
+`devws image add|remove|deprecate`. Deprecated entries disappear from the
+creation picker but keep serving existing workspaces. Entries can also be
+seeded from helm values (`workspaceImages: [{name, image, description,
+deprecated}]`); those are helm-managed — `helm upgrade` reverts manual
+edits to them, while API-created entries are free-form. Image references
+must carry an explicit `:tag` or `@sha256:` digest so workspaces are
+reproducible.
+
+**Private registries** — set the chart's top-level `imagePullSecrets`
+list to pull both the control-plane and workspace images from private
+registries; the referenced docker-registry Secrets must live in the
+release namespace:
+
+```bash
+kubectl -n devws-system create secret docker-registry my-registry \
+  --docker-server=ghcr.io --docker-username=user --docker-password=pass
+helm upgrade devws charts/devws --reuse-values --set "imagePullSecrets[0]=my-registry"
+```
+
+The user controller copies each configured secret into every
+`devws-<user>` namespace (kubelet only reads pull secrets from the pod's
+own namespace) and a watch propagates credential rotation without pod
+restarts. Changing the *list* requires an apiserver restart — the
+`checksum/config` annotation rolls the deployment automatically.
 
 **Metrics** — the apiserver serves prometheus metrics on
 `--metrics-addr` (`metrics.enabled=true` in values, port 8081): request
@@ -236,6 +284,12 @@ views (admin + profile), a cross-namespace audit log, pod security
 admission labels with a documented decision record
 ([docs/security.md](docs/security.md)), and CI (unit, chart lint/install,
 full kind e2e).
+
+The workspace image catalog + private registry support adds the
+`WorkspaceImage` CRD with admin CRUD (UI, CLI, helm seeding), the
+create/patch image policy (regular users: catalog only; admins: any
+ref), and platform-wide `imagePullSecrets` synced into every user
+namespace with live rotation.
 
 ## License
 

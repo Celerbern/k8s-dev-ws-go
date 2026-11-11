@@ -23,9 +23,9 @@ func imageCmd() *cobra.Command {
 
 func imageListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
+		Use:     "list",
 		Aliases: []string{"ls"},
-		Short: "List the workspace images users can pick from",
+		Short:   "List the workspace images users can pick from",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, err := LoadConfig()
 			if err != nil {

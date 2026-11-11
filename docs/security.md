@@ -18,8 +18,9 @@ Three parties interact; devws draws the trust boundaries between them:
 Two consequences of the design:
 
 - **The workspace image and everything cloned into a workspace are
-  semi-trusted.** Users can override `spec.image` per workspace and run
-  arbitrary build tooling; devws confines the *pod*, not the *processes*.
+  semi-trusted.** Users pick `spec.image` per workspace from the admin
+  curated catalog (admins may pin any reference) and run arbitrary build
+  tooling; devws confines the *pod*, not the *processes*.
   A workspace compromised through its content is contained to the user's
   own namespace and home volume (see [pod security](#workspace-pods)).
 - **Cluster credentials are out of scope.** Whoever can run pods on the
@@ -189,16 +190,31 @@ label policy.
 The default image (`images/workspace`) is Ubuntu 24.04 with Go, Node,
 Python and common build tooling. Two deliberate choices:
 
-- **`spec.image` is user-overridable.** Any image can be pinned per
-  workspace; treat images (default or custom) as *semi-trusted code
-  shipped to the cluster* (see the trust model). Pin and vet what you
-  allow, and combine with admission controllers if you must restrict
-  registries.
+- **`spec.image` is gated by the image catalog.** Regular users may only
+  pin images offered by the `WorkspaceImage` catalog (plus the platform
+  default); admins may use any reference. Whatever runs is *semi-trusted
+  code shipped to the cluster* (see the trust model): admins should only
+  catalog images they vet, pin tags/digests (references must carry an
+  explicit `:tag` or `@sha256:` digest), and combine with admission
+  controllers if they must restrict registries. Existing workspaces are
+  never retro-validated — deprecating or removing a catalog entry does
+  not stop them.
 - **`sudo` is passwordless for the in-container user.** This is a
   development convenience (installing packages without switching users)
   and is *not* a security boundary — the user already controls
   everything the pod can do. It grants nothing beyond the pod's own
   (capability-restricted, non-token-holding) context.
+
+### Private registry pull secrets
+
+The configured `imagePullSecrets` (chart values, top-level) are copied
+verbatim into every `devws-<user>` namespace so kubelet can read them
+where the pods run. Workspace pods get no service account token, so
+devws users cannot read the copies through the platform; anyone with
+direct kubernetes access to a user namespace can, though — treat the
+registry credentials as cluster-tenant-visible, use a read-only or
+pull-limited robot account for them, and rotate via the platform
+namespace secret (propagation to all user namespaces is automatic).
 
 ## What this design does not cover
 
