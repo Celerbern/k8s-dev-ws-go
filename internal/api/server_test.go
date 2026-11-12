@@ -3,9 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -246,5 +250,44 @@ func TestAPIRequestMetrics(t *testing.T) {
 	}
 	if v := testutil.ToFloat64(devwsmetrics.APIRequestsTotal.WithLabelValues("DELETE", "unmatched", "405")); v != 1 {
 		t.Fatalf("unmatched route counted %v, want 1", v)
+	}
+}
+
+func TestRequestLogging(t *testing.T) {
+	srv := newTestServer(t, testUser("alice", "password123", "user"))
+
+	// The default slog logger writes through the standard log package,
+	// so its output can be captured for the duration of the test.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	prevLevel := slog.SetLogLoggerLevel(slog.LevelDebug)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		slog.SetLogLoggerLevel(prevLevel)
+	})
+
+	// /api/ requests are logged at debug level, without the query string.
+	resp, err := srv.Client().Get(srv.URL + "/api/auth/providers?probe=secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	out := buf.String()
+	if !strings.Contains(out, "path=/api/auth/providers") || !strings.Contains(out, "status=200") {
+		t.Fatalf("api request not logged: %q", out)
+	}
+	if strings.Contains(out, "probe=secret") {
+		t.Fatal("query string must not be logged")
+	}
+
+	// Health probes and web UI assets stay out of the log.
+	buf.Reset()
+	resp, err = srv.Client().Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if buf.Len() != 0 {
+		t.Fatalf("health probe must not be logged, got %q", buf.String())
 	}
 }

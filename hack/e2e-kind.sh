@@ -90,8 +90,12 @@ if kubectl get crd users.devws.io >/dev/null 2>&1; then
     kubectl patch "$u" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
   done
 fi
-kubectl delete crd users.devws.io workspaces.devws.io --ignore-not-found --timeout=60s >/dev/null 2>&1 || true
-kubectl delete ns "$RELEASE_NS" devws-e2e devws-admin --ignore-not-found --timeout=120s >/dev/null 2>&1 || true
+kubectl delete crd users.devws.io workspaces.devws.io workspaceimages.devws.io --ignore-not-found --timeout=60s >/dev/null 2>&1 || true
+# Label-driven: every namespace the User controller creates carries
+# devws.io/managed=true, so this also removes namespaces of users created
+# mid-test (e.g. the OIDC users) that a hardcoded list would miss.
+kubectl delete ns -l devws.io/managed=true --ignore-not-found --timeout=120s >/dev/null 2>&1 || true
+kubectl delete ns "$RELEASE_NS" --ignore-not-found --timeout=120s >/dev/null 2>&1 || true
 
 # Dex must run before the chart install: the apiserver performs OIDC
 # discovery against the issuer at startup and would crash-loop otherwise.

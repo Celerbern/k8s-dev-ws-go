@@ -35,9 +35,15 @@ type fakeIdP struct {
 	discovery *oidctest.Server
 	priv      *rsa.PrivateKey
 
-	mu       sync.Mutex
-	idToken  string
-	lastForm url.Values
+	mu        sync.Mutex
+	idToken   string
+	lastForm  url.Values
+	tokenReqs int
+	usedCodes map[string]bool
+	// requireClientSecretPost rejects HTTP Basic client credentials,
+	// like a provider whose client is registered for
+	// client_secret_post only.
+	requireClientSecretPost bool
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -52,7 +58,8 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 				{PublicKey: priv.Public(), KeyID: "test-key", Algorithm: gooidc.RS256},
 			},
 		},
-		priv: priv,
+		priv:      priv,
+		usedCodes: map[string]bool{},
 	}
 }
 
@@ -62,10 +69,41 @@ func (f *fakeIdP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// Model Keycloak's token endpoint: the authorization code is
+		// consumed *before* the request is validated, and the PKCE
+		// verifier must obey RFC 7636's 43-128 character limit. Serving
+		// both here means a retried token request can only ever see
+		// "Code not valid", exactly as in production.
 		f.mu.Lock()
 		f.lastForm = r.PostForm
+		f.tokenReqs++
 		token := f.idToken
+		code := r.PostForm.Get("code")
+		reused := f.usedCodes[code]
+		f.usedCodes[code] = true
 		f.mu.Unlock()
+		fail := func(desc string) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":             "invalid_grant",
+				"error_description": desc,
+			})
+		}
+		if reused {
+			fail("Code not valid")
+			return
+		}
+		if f.requireClientSecretPost {
+			if _, _, ok := r.BasicAuth(); ok || r.PostForm.Get("client_secret") == "" {
+				fail("Invalid client credentials")
+				return
+			}
+		}
+		if v := r.PostForm.Get("code_verifier"); len(v) < 43 || len(v) > 128 {
+			fail("Invalid code verifier")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"access_token": "test-access-token",
@@ -100,6 +138,12 @@ func (f *fakeIdP) tokenForm() url.Values {
 	return f.lastForm
 }
 
+func (f *fakeIdP) tokenRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokenReqs
+}
+
 func testOIDCUser(name, role string) *devwsv1alpha1.User {
 	u := &devwsv1alpha1.User{}
 	u.Name = name
@@ -112,7 +156,17 @@ func testOIDCUser(name, role string) *devwsv1alpha1.User {
 // enabled against it. Returns the api server and the fake IdP.
 func newOIDCTestServer(t *testing.T, objects ...runtime.Object) (*httptest.Server, *fakeIdP) {
 	t.Helper()
+	return newOIDCTestServerWith(t, nil, objects...)
+}
+
+// newOIDCTestServerWith is newOIDCTestServer with a hook to adjust the
+// fake IdP before the api server discovers it.
+func newOIDCTestServerWith(t *testing.T, tweak func(*fakeIdP), objects ...runtime.Object) (*httptest.Server, *fakeIdP) {
+	t.Helper()
 	idp := newFakeIdP(t)
+	if tweak != nil {
+		tweak(idp)
+	}
 	idpSrv := httptest.NewServer(idp)
 	t.Cleanup(idpSrv.Close)
 	idp.discovery.SetIssuer(idpSrv.URL)
@@ -272,6 +326,14 @@ func TestOIDCLoginSuccess(t *testing.T) {
 	// The code exchange carried the PKCE verifier.
 	if v := idp.tokenForm().Get("code_verifier"); v == "" {
 		t.Fatal("token exchange must include a code_verifier")
+	} else if len(v) < 43 || len(v) > 128 {
+		t.Fatalf("code_verifier must be 43-128 characters per RFC 7636, got %d: %q", len(v), v)
+	}
+	// The token request must not be retried: providers that consume the
+	// authorization code before validating it (Keycloak) answer the
+	// second attempt with a misleading "Code not valid".
+	if n := idp.tokenRequests(); n != 1 {
+		t.Fatalf("token endpoint must be called exactly once, got %d", n)
 	}
 
 	// The session authenticates like any other.
@@ -527,5 +589,92 @@ func TestOIDCTxCookieIsHttpOnly(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("start must set the tx cookie")
+	}
+}
+
+func TestOidcLogPrefix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// Keycloak codes are "<uuid>.<userSessionId>.<clientUUID>" —
+		// only the leading segment is logged.
+		{"1a2b3c4d-5678-90ab-cdef-1234567890ab.f00dcafe.c0ffee", "1a2b3c4d"},
+		{"short.abc.def", "short"},
+		{"no-dots-here", "no-dots-"}, // capped at 8 chars
+		{"a.b.c", "a"},
+		{"", ""},
+		{".leading.dot", ".leading"}, // segment before the dot is empty: keep as-is, capped
+	}
+	for _, c := range cases {
+		if got := oidcLogPrefix(c.in); got != c.want {
+			t.Errorf("oidcLogPrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestOIDCTokenRequestIsNotRetried covers the failure mode seen against
+// Keycloak: x/oauth2 auto-detects the client auth style by sending the
+// token request twice. Keycloak consumes the authorization code before
+// validating the request, so the retry reports a misleading
+// `invalid_grant "Code not valid"` and hides the real error.
+func TestOIDCTokenRequestIsNotRetried(t *testing.T) {
+	srv, idp := newOIDCTestServerWith(t, func(f *fakeIdP) {
+		f.requireClientSecretPost = true
+	}, testOIDCUser("e2e-oidc", "user"))
+	client := oidcClient(t)
+
+	authURL := startOIDCLogin(t, client, srv.URL)
+	resp := finishOIDCLogin(t, client, srv.URL, idp, authURL, "e2e-oidc")
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("callback must redirect, got %d", resp.StatusCode)
+	}
+	// The default style is basic, which this IdP rejects. One attempt
+	// only: the operator must pick clientAuthStyle=post instead of
+	// relying on a retry that burns the code.
+	if n := idp.tokenRequests(); n != 1 {
+		t.Fatalf("token endpoint must be called exactly once, got %d", n)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "error=oidc_error") {
+		t.Fatalf("wrong client auth style must fail the login, got %q", loc)
+	}
+}
+
+// TestOIDCClientAuthStylePost covers providers registered for
+// client_secret_post.
+func TestOIDCClientAuthStylePost(t *testing.T) {
+	idp := newFakeIdP(t)
+	idp.requireClientSecretPost = true
+	idpSrv := httptest.NewServer(idp)
+	t.Cleanup(idpSrv.Close)
+	idp.discovery.SetIssuer(idpSrv.URL)
+
+	c := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithRuntimeObjects(testOIDCUser("e2e-oidc", "user")).
+		WithStatusSubresource(&devwsv1alpha1.User{}, &devwsv1alpha1.Workspace{}).
+		Build()
+	sessions := auth.NewSessionManager([]byte("test-key-test-key-test-key-32!"))
+	provider, err := oidc.NewProvider(context.Background(), &oidc.Config{
+		IssuerURL:       idpSrv.URL,
+		ClientID:        oidcTestClientID,
+		ClientSecret:    "test-secret",
+		RedirectURL:     "http://apiserver.test/api/auth/oidc/callback",
+		UsernameClaim:   "preferred_username",
+		Scopes:          []string{"openid", "profile", "email"},
+		ClientAuthStyle: "post",
+	}, sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New("127.0.0.1:0", c, testScheme, config.Default(), sessions, nil, provider)
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+
+	client := oidcClient(t)
+	authURL := startOIDCLogin(t, client, srv.URL)
+	resp := finishOIDCLogin(t, client, srv.URL, idp, authURL, "e2e-oidc")
+	if !sessionCookieSet(resp) {
+		t.Fatalf("clientAuthStyle=post must log in, got %q", resp.Header.Get("Location"))
+	}
+	if n := idp.tokenRequests(); n != 1 {
+		t.Fatalf("token endpoint must be called exactly once, got %d", n)
 	}
 }

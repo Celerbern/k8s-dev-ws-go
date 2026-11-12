@@ -59,6 +59,17 @@ oidc:
   usernameClaim: preferred_username
   # Comma-separated scopes; "openid" is always included.
   scopes: "openid profile email"
+  # How client credentials are sent to the token endpoint: basic (HTTP
+  # Basic header, the RFC 6749 default), post (client_id/client_secret in
+  # the request body) or auto (probe both). Leave empty for basic; "auto"
+  # sends the token request twice and breaks providers that consume the
+  # authorization code before validating it, such as Keycloak.
+  clientAuthStyle: ""
+
+# devws application log level for the apiserver (API request logging and
+# OIDC flow breadcrumbs appear at debug): debug, info, warn or error.
+# Controller-runtime components keep their own -zap-* flags.
+logLevel: info
 
 # Platform configuration rendered into the devws-config ConfigMap.
 config:

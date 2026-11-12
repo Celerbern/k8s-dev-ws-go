@@ -43,13 +43,28 @@ func NewProvider(ctx context.Context, cfg *Config, sessions *auth.SessionManager
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery for %q: %w", cfg.IssuerURL, err)
 	}
+	endpoint := op.Endpoint()
+	// AuthStyleUnknown makes x/oauth2 send the token request twice (Basic
+	// first, then credentials in the body on any error). Providers such as
+	// Keycloak consume the authorization code before validating PKCE, so
+	// the retry reports a misleading "Code not valid" and hides the real
+	// error. Pin the style unless the operator explicitly opts into
+	// probing.
+	switch cfg.ClientAuthStyle {
+	case "auto":
+		endpoint.AuthStyle = oauth2.AuthStyleAutoDetect
+	case "post":
+		endpoint.AuthStyle = oauth2.AuthStyleInParams
+	default:
+		endpoint.AuthStyle = oauth2.AuthStyleInHeader
+	}
 	return &Provider{
 		cfg: cfg,
 		oauth2: &oauth2.Config{
 			ClientID:     cfg.ClientID,
 			ClientSecret: cfg.ClientSecret,
 			RedirectURL:  cfg.RedirectURL,
-			Endpoint:     op.Endpoint(),
+			Endpoint:     endpoint,
 			Scopes:       cfg.Scopes,
 		},
 		verifier: op.Verifier(&gooidc.Config{ClientID: cfg.ClientID}),
@@ -84,13 +99,17 @@ type Tx struct {
 // signed cookie value to hand to the browser.
 func (p *Provider) NewTx() (Tx, string, error) {
 	tx := Tx{}
-	for _, dst := range []*string{&tx.State, &tx.Nonce, &tx.Verifier} {
+	for _, dst := range []*string{&tx.State, &tx.Nonce} {
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
 			return Tx{}, "", fmt.Errorf("generating oidc state: %w", err)
 		}
 		*dst = hex.EncodeToString(b)
 	}
+	// RFC 7636 requires 43-128 characters; providers such as Keycloak
+	// reject anything shorter at the token endpoint. GenerateVerifier
+	// produces the RFC-recommended 43-character value.
+	tx.Verifier = oauth2.GenerateVerifier()
 	raw, err := json.Marshal(tx)
 	if err != nil {
 		return Tx{}, "", err

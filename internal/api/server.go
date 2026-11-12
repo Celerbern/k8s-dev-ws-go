@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -121,7 +122,9 @@ func (s *Server) routes() {
 func (s *Server) NeedLeaderElection() bool { return false }
 
 // Handler returns the HTTP handler (for tests and custom servers).
-func (s *Server) Handler() http.Handler { return s.withRequestMetrics(s.mux) }
+func (s *Server) Handler() http.Handler {
+	return s.withRequestLogging(s.withRequestMetrics(s.mux))
+}
 
 // statusRecorder captures the response status code for metrics.
 type statusRecorder struct {
@@ -153,6 +156,30 @@ func (s *Server) withRequestMetrics(next http.Handler) http.Handler {
 			route = "unmatched"
 		}
 		devwsmetrics.APIRequestsTotal.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
+	})
+}
+
+// withRequestLogging logs /api/ requests at debug level (enable with
+// --log-level=debug or chart value logLevel). Only the path is logged,
+// never the query string: the OIDC callback URL carries a one-time
+// authorization code that must not end up in logs. Health probes and
+// web UI assets are skipped to keep the log readable.
+func (s *Server) withRequestLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		slog.Debug("api request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"duration", time.Since(start).Round(time.Millisecond),
+			"remote", r.RemoteAddr,
+		)
 	})
 }
 

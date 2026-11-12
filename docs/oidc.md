@@ -46,6 +46,7 @@ helm upgrade --install devws charts/devws \
 | `oidc.redirectUrl` | The exact callback URL to register at the provider: `https://<devws-host>/api/auth/oidc/callback`. |
 | `oidc.usernameClaim` | ID token claim matched against the devws username (default `preferred_username`). |
 | `oidc.scopes` | Comma-separated scopes; `openid` is always included. Defaults to `openid profile email`. |
+| `oidc.clientAuthStyle` | How client credentials reach the token endpoint: empty/`basic` (HTTP Basic header, the RFC 6749 default), `post` (`client_id`/`client_secret` in the body), or `auto` (probe both). Set `post` if the client is registered at the provider as `client_secret_post`. |
 
 Changing these values rolls the apiserver deployment (the configuration
 is read once at startup).
@@ -125,5 +126,24 @@ claim name was configured as.
   (stale login attempt, cookie blocked), token exchange failure (wrong
   client secret, redirect URI not registered), or ID token verification
   failure. The apiserver log has the reason.
+- **Keycloak `invalid_grant` "Code not valid"**: Keycloak no longer knew
+  the authorization code at exchange time — it was already used (the
+  callback URL fetched twice: browser refresh/prefetch or a retrying
+  proxy), it aged out (Keycloak's default access-code lifespan is 60s),
+  or Keycloak lost it (restart, or multi-node without a shared cache or
+  sticky sessions). Run with `--set logLevel=debug`: each
+  `oidc: callback received` line carries the code prefix — two lines
+  with the same prefix mean a replay. The same prefix appears in
+  Keycloak's log as `Code '<uuid>' already used…`, which is what to ask
+  the Keycloak admins to grep for.
+- **Keycloak "Code not valid" with only one callback in the log**: the
+  code was consumed by a token request that failed validation. Keycloak
+  removes the code from its store *before* checking PKCE and client
+  credentials, so a rejected first attempt makes any retry report
+  "Code not valid" and hides the cause. devws sends the token request
+  exactly once (`clientAuthStyle` defaults to `basic`, no probing
+  retry), so if this happens check Keycloak's own log for the real
+  error on that code, and set `oidc.clientAuthStyle` to match the
+  client registration (`basic` vs `post`).
 - **`oidc_unauthorized`**: the claim did not map to an existing user
   with `authMethod: oidc`.

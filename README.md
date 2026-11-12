@@ -222,6 +222,15 @@ controllers' caches. With the prometheus operator installed, set
 `metrics.serviceMonitor.enabled=true` to get a ServiceMonitor scraping
 the `devws.io/metrics: "true"` labeled service.
 
+**Logging** — application logs (API, OIDC, SSH gateway) use slog at
+`--log-level` (`logLevel` in values, default `info`). Set
+`--set logLevel=debug` for per-request `/api/` access lines (method,
+path, status, duration — never query strings, since the OIDC callback
+carries a one-time authorization code) and OIDC login-flow breadcrumbs,
+including the authorization-code prefix used to correlate a failed
+login with the identity provider's logs. Controller-runtime components
+log through zap and keep their own `-zap-*` flags.
+
 **High availability** — the web API and SSH gateway are stateless and
 serve from every replica; the controllers elect a leader via a Lease in
 the release namespace. Scale with `replicaCount` (leader election is on

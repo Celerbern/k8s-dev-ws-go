@@ -38,6 +38,7 @@ spec:
             - --ssh-addr=:2222
             - --platform-namespace={{ include "devws.namespace" . }}
             - --leader-elect={{ .Values.leaderElection }}
+            - --log-level={{ .Values.logLevel | default "info" }}
             {{- if .Values.metrics.enabled }}
             - --metrics-addr=:{{ .Values.metrics.port }}
             {{- end }}

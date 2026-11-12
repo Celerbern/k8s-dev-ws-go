@@ -6,6 +6,7 @@
 #   make test         — run Go tests
 #   make kind-e2e     — full end-to-end install on a local kind cluster
 #   make kind-install — (re)deploy the chart on an existing kind cluster
+#   make teardown     — full uninstall: release, CRDs, CRs, namespaces
 
 MODULE        := github.com/celerbern/k8s-dev-ws-go
 APISERVER_BIN := bin/devws-apiserver
@@ -21,7 +22,7 @@ export KIND_NAME
 
 .PHONY: all build build-go build-web generate test vet fmt clean \
 	docker-apiserver docker-workspace kind-up kind-down kind-load kind-install \
-	kind-e2e helm-lint
+	kind-e2e helm-lint teardown
 
 all: build
 
@@ -82,6 +83,10 @@ kind-install:
 		--set config.sshHost=127.0.0.1:2222 \
 		--set service.ssh.type=NodePort \
 		--set service.ssh.nodePort=30022
+
+## teardown: uninstall the release, delete CRDs/CRs and managed namespaces
+teardown:
+	RELEASE_NAME=$(RELEASE_NAME) RELEASE_NS=$(RELEASE_NS) ./hack/teardown.sh
 
 ## kind-e2e: create a kind cluster, build images, install, run smoke tests
 kind-e2e:

@@ -45,6 +45,7 @@ func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "failed to start login")
 		return
 	}
+	slog.Debug("oidc: login started", "state", oidcLogPrefix(tx.State))
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidc.TxCookieName,
 		Value:    value,
@@ -83,6 +84,10 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		fail(oidcErrFailed)
 		return
 	}
+	// Debug breadcrumbs for login-flow debugging (--log-level=debug): the
+	// code prefix is the correlation key with the provider's logs (Keycloak
+	// logs "Code '<uuid>' already used…", where <uuid> is this prefix).
+	slog.Debug("oidc: callback received", "code", oidcLogPrefix(code), "state", oidcLogPrefix(state))
 	cookie, err := r.Cookie(oidc.TxCookieName)
 	if err != nil || cookie.Value == "" {
 		fail(oidcErrFailed)
@@ -96,7 +101,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	username, err := s.oidc.VerifyCallback(r.Context(), tx, code)
 	if err != nil {
-		slog.Error("oidc: verifying callback", "error", err)
+		slog.Error("oidc: verifying callback", "error", err, "code", oidcLogPrefix(code))
 		fail(oidcErrFailed)
 		return
 	}
@@ -131,7 +136,23 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, sessionCookie(s.sessions.Sign(user.Name), r.TLS != nil))
 	http.SetCookie(w, clearTxCookie(r.TLS != nil))
+	slog.Debug("oidc: login complete", "username", user.Name)
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// oidcLogPrefix returns the first dot-separated segment of s, capped at
+// 8 characters. It is enough to correlate log lines with each other and
+// with the provider's own logs (Keycloak logs the first code segment,
+// "Code '<uuid>' already used for userSession…"), while the prefix alone
+// can never be replayed against the provider.
+func oidcLogPrefix(s string) string {
+	if i := strings.IndexByte(s, '.'); i > 0 {
+		s = s[:i]
+	}
+	if len(s) > 8 {
+		s = s[:8]
+	}
+	return s
 }
 
 func clearTxCookie(secure bool) *http.Cookie {

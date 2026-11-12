@@ -128,3 +128,59 @@ func TestLoadRejectsBadIssuer(t *testing.T) {
 		t.Fatal("invalid issuerUrl must fail validation")
 	}
 }
+
+func TestLoadClientAuthStyle(t *testing.T) {
+	base := map[string]string{
+		"issuerUrl":    "https://idp.example.com",
+		"clientId":     "devws",
+		"clientSecret": "s3cret",
+		"redirectUrl":  "https://devws.example.com/callback",
+	}
+	for style, want := range map[string]string{"": "", "basic": "basic", "post": "post", "auto": "auto"} {
+		data := map[string]string{}
+		for k, v := range base {
+			data[k] = v
+		}
+		if style != "" {
+			data["clientAuthStyle"] = style
+		}
+		c := fake.NewClientBuilder().
+			WithScheme(cfgScheme).
+			WithRuntimeObjects(oidcSecret(data)).
+			Build()
+		cfg, err := Load(context.Background(), c, "devws-system")
+		if err != nil {
+			t.Fatalf("clientAuthStyle %q: %v", style, err)
+		}
+		if cfg.ClientAuthStyle != want {
+			t.Fatalf("clientAuthStyle %q: got %q, want %q", style, cfg.ClientAuthStyle, want)
+		}
+	}
+
+	data := map[string]string{"clientAuthStyle": "nonsense"}
+	for k, v := range base {
+		data[k] = v
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(cfgScheme).
+		WithRuntimeObjects(oidcSecret(data)).
+		Build()
+	if _, err := Load(context.Background(), c, "devws-system"); err == nil {
+		t.Fatal("unknown clientAuthStyle must fail validation")
+	}
+}
+
+func TestLoadRejectsNonHTTPRedirectURL(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(cfgScheme).
+		WithRuntimeObjects(oidcSecret(map[string]string{
+			"issuerUrl":    "https://idp.example.com",
+			"clientId":     "devws",
+			"clientSecret": "s3cret",
+			"redirectUrl":  "ftp://devws.example.com/callback",
+		})).
+		Build()
+	if _, err := Load(context.Background(), c, "devws-system"); err == nil {
+		t.Fatal("non-http(s) redirectUrl must fail validation")
+	}
+}

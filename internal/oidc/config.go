@@ -44,6 +44,13 @@ type Config struct {
 	UsernameClaim string
 	// Scopes requested from the provider. "openid" is always included.
 	Scopes []string
+	// ClientAuthStyle is how client credentials are sent to the token
+	// endpoint. Empty means client_secret_basic (the RFC 6749 default).
+	// "auto" makes golang.org/x/oauth2 probe both styles, which issues
+	// the token request twice; that is harmful for providers that
+	// consume the authorization code before validating the request
+	// (Keycloak), so it is opt-in only.
+	ClientAuthStyle string
 }
 
 // Load reads the OIDC configuration from the devws-oidc Secret in the
@@ -64,11 +71,12 @@ func Load(ctx context.Context, c client.Reader, namespace string) (*Config, erro
 	}
 
 	cfg := &Config{
-		IssuerURL:     get("issuerUrl"),
-		ClientID:      get("clientId"),
-		ClientSecret:  get("clientSecret"),
-		RedirectURL:   get("redirectUrl"),
-		UsernameClaim: get("usernameClaim"),
+		IssuerURL:       get("issuerUrl"),
+		ClientID:        get("clientId"),
+		ClientSecret:    get("clientSecret"),
+		RedirectURL:     get("redirectUrl"),
+		UsernameClaim:   get("usernameClaim"),
+		ClientAuthStyle: get("clientAuthStyle"),
 	}
 	if cfg.UsernameClaim == "" {
 		cfg.UsernameClaim = DefaultUsernameClaim
@@ -104,8 +112,13 @@ func (c *Config) validate() error {
 	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("issuerUrl must be an absolute http(s) URL, got %q", c.IssuerURL)
 	}
-	if u, err := url.Parse(c.RedirectURL); err != nil || !u.IsAbs() || u.Host == "" {
+	if u, err := url.Parse(c.RedirectURL); err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("redirectUrl must be an absolute http(s) URL, got %q", c.RedirectURL)
+	}
+	switch c.ClientAuthStyle {
+	case "", "basic", "post", "auto":
+	default:
+		return fmt.Errorf("clientAuthStyle must be one of basic, post, auto, got %q", c.ClientAuthStyle)
 	}
 	hasOpenID := false
 	for _, s := range c.Scopes {

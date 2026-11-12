@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -45,6 +47,7 @@ func main() {
 		metricsAddr       string
 		platformNamespace string
 		leaderElect       bool
+		logLevel          string
 	)
 	// NOTE: --kubeconfig is registered by controller-runtime's pkg/client/config
 	// init() and honored by ctrl.GetConfigOrDie() below (along with KUBECONFIG
@@ -55,9 +58,21 @@ func main() {
 	flag.StringVar(&platformNamespace, "platform-namespace", "devws-system", "namespace the control plane runs in")
 	flag.BoolVar(&leaderElect, "leader-elect", true,
 		"elect a leader replica that runs the controllers; the web API and SSH gateway serve from every replica either way")
+	flag.StringVar(&logLevel, "log-level", "info",
+		"minimum level for devws application logs (debug, info, warn, error); controller-runtime components use the -zap-* flags")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Application logs (slog: API, OIDC, SSH gateway) go through the
+	// default logger, which the zap flags do not touch — set its level
+	// here so --log-level=debug reveals the debug breadcrumbs.
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(logLevel)); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid --log-level %q (want debug, info, warn or error)\n", logLevel)
+		os.Exit(1)
+	}
+	slog.SetLogLoggerLevel(level)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	logger := ctrl.Log.WithName("setup")
